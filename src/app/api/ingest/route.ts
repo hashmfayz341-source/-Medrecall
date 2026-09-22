@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import { extractPdfPages } from "@/lib/ingestion/pdf";
+import {
+  PdfExtractionError,
+  classifyExtractionError,
+  extractPdfPages,
+} from "@/lib/ingestion/pdf";
 import { getProvider } from "@/lib/ai";
 import type { Concept } from "@/lib/domain/types";
 
@@ -59,7 +63,31 @@ export async function POST(request: Request) {
   try {
     document = await extractPdfPages(bytes, file.name, { courseId, lectureId });
   } catch (cause) {
-    console.error("[ingest] PDF extraction failed", cause);
+    const reason =
+      cause instanceof PdfExtractionError
+        ? cause.reason
+        : classifyExtractionError(cause);
+
+    // Enough detail server-side to tell a bad file from a broken deployment;
+    // never a stack trace in the response.
+    console.error(
+      `[ingest] extraction failed reason=${reason} file=${file.name} bytes=${file.size}`,
+      cause,
+    );
+
+    if (reason === "ENCRYPTED") {
+      return NextResponse.json(
+        { error: "This PDF is password protected. Remove the protection and try again." },
+        { status: 422 },
+      );
+    }
+    if (reason === "RUNTIME") {
+      // The file is probably fine; the server could not run the parser.
+      return NextResponse.json(
+        { error: "The server could not process PDFs just now. This is not a problem with your file." },
+        { status: 500 },
+      );
+    }
     return NextResponse.json(
       { error: "Could not read this file as a PDF." },
       { status: 422 },
