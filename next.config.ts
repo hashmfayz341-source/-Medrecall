@@ -20,7 +20,13 @@ const nextConfig: NextConfig = {
    * Naming the file here forces it into the trace.
    */
   outputFileTracingIncludes: {
-    "/api/ingest": [
+    // Every route that parses a PDF is listed explicitly. A key like
+    // "/api/ingest" currently also matches "/api/ingest/selftest", but that is
+    // prefix behaviour rather than a documented guarantee, and each App Route
+    // becomes its own function: a route left off this list would ship without
+    // the worker and fail exactly as production did.
+    "/api/ingest": ["./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"],
+    "/api/ingest/selftest": [
       "./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
     ],
   },

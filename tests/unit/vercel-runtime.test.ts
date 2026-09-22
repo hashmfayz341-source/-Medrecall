@@ -25,14 +25,32 @@ describe("the pdfjs worker must be resolvable in the server runtime", () => {
     ).not.toThrow();
   });
 
-  it("next.config names the worker so file tracing ships it", () => {
-    // A build-output assertion is impractical in a unit test, so this guards
-    // the config that puts the worker into the serverless bundle. Removing it
-    // reintroduces the production failure while every other test still passes.
+  it("next.config names the worker for EVERY route that parses a PDF", () => {
+    // Each App Route becomes its own serverless function, so every PDF-parsing
+    // route needs the worker in its own trace. A key like "/api/ingest"
+    // currently also matches "/api/ingest/selftest" by prefix, but that is not
+    // a documented guarantee, so both are listed explicitly.
     const config = readFileSync("next.config.ts", "utf8");
     expect(config).toContain("outputFileTracingIncludes");
-    expect(config).toContain("pdfjs-dist/legacy/build/pdf.worker.mjs");
-    expect(config).toContain('"/api/ingest"');
+
+    for (const route of ['"/api/ingest"', '"/api/ingest/selftest"']) {
+      expect(config, `${route} must be listed`).toContain(route);
+    }
+
+    // Every listed PDF route points at the worker.
+    const includes = config.slice(config.indexOf("outputFileTracingIncludes"));
+    const workerMentions = includes.match(
+      /pdfjs-dist\/legacy\/build\/pdf\.worker\.mjs/g,
+    );
+    expect(workerMentions?.length ?? 0).toBeGreaterThanOrEqual(2);
+  });
+
+  it("the trace verifier covers every PDF-parsing route", () => {
+    // The build-time check is the real guard; this makes sure a new PDF route
+    // cannot be added without also being verified.
+    const verifier = readFileSync("scripts/verify-pdf-trace.mjs", "utf8");
+    expect(verifier).toContain('"api/ingest"');
+    expect(verifier).toContain('"api/ingest/selftest"');
   });
 });
 
