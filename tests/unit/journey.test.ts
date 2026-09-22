@@ -8,7 +8,6 @@ import {
   createLearnerState,
   getNextStep,
   isLectureUnlocked,
-  markChunkTaught,
   recordAttempt,
 } from "@/lib/engine/tutor";
 import { weakConcepts } from "@/lib/engine/priority";

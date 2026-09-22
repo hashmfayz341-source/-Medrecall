@@ -16,15 +16,14 @@ export interface StepLog {
   mastery?: string;
 }
 
-export type AnswerFn = (step: SessionStep, log: StepLog[]) => string;
+/** The step kinds that actually ask the learner something. */
+export type QuestionStep = Extract<SessionStep, { item: unknown }>;
+
+export type AnswerFn = (step: QuestionStep, log: StepLog[]) => string;
 
 /** Default: answer everything correctly. */
 export const answerCorrectly: AnswerFn = (step) =>
-  step.kind === "RETRIEVE" ||
-  step.kind === "REMEDIATE" ||
-  step.kind === "INTERLEAVE"
-    ? (ANSWERS[step.concept.id] ?? WRONG)
-    : "";
+  ANSWERS[step.concept.id] ?? WRONG;
 
 /**
  * Walk a lecture the way the UI does: ask the engine for the next step, act on

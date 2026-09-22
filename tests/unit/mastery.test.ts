@@ -4,7 +4,9 @@ import {
   createProgress,
   masteryForStreak,
 } from "@/lib/domain/mastery";
-import { newSchedule, ratingFor } from "@/lib/engine/scheduler";
+import { newSchedule, ratingFor, scheduleAfterAttempt } from "@/lib/engine/scheduler";
+import { getConcept } from "@/lib/engine/tutor";
+import { pathologyCurriculum } from "@/lib/content/pathology";
 import { Rating } from "ts-fsrs";
 import { ANSWERS, T0, answer, daysLater, fresh } from "./helpers";
 
@@ -234,13 +236,33 @@ describe("fsrs rating mapping", () => {
   });
 
   it("a remediation pass schedules a sooner return than a clean spaced pass", () => {
-    const base = createProgress("c-atp-depletion", newSchedule(T0));
-    const concept = { id: "c-atp-depletion", status: "ACTIVE" } as never;
-    // Compared through the public helper to keep the FSRS wiring under test.
-    expect(ratingFor(true, "IMMEDIATE_REMEDIATION")).toBeLessThan(
-      ratingFor(true, "SPACED"),
+    const concept = getConcept(pathologyCurriculum, "c-atp-depletion");
+    const base = createProgress(concept.id, newSchedule(T0));
+
+    const remediated = scheduleAfterAttempt(
+      concept,
+      base,
+      true,
+      "IMMEDIATE_REMEDIATION",
+      T0,
     );
-    expect(base.schedule.reps).toBe(0);
-    void concept;
+    const clean = scheduleAfterAttempt(concept, base, true, "SPACED", T0);
+
+    expect(new Date(remediated.due).getTime()).toBeLessThan(
+      new Date(clean.due).getTime(),
+    );
+  });
+
+  it("a failure schedules the soonest return of all", () => {
+    const concept = getConcept(pathologyCurriculum, "c-atp-depletion");
+    const base = createProgress(concept.id, newSchedule(T0));
+
+    const failed = scheduleAfterAttempt(concept, base, false, "INITIAL", T0);
+    const clean = scheduleAfterAttempt(concept, base, true, "SPACED", T0);
+
+    expect(new Date(failed.due).getTime()).toBeLessThanOrEqual(
+      new Date(clean.due).getTime(),
+    );
+    expect(failed.reps).toBeGreaterThan(0);
   });
 });

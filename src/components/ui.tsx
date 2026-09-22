@@ -62,14 +62,19 @@ export function ButtonLink({
   variant = "primary",
   className = "",
   children,
+  ...rest
 }: {
   href: string;
   variant?: keyof typeof variants;
   className?: string;
   children: React.ReactNode;
-}) {
+} & Omit<React.ComponentPropsWithoutRef<typeof Link>, "href" | "className">) {
   return (
-    <Link href={href} className={`${buttonBase} ${variants[variant]} ${className}`}>
+    <Link
+      {...rest}
+      href={href}
+      className={`${buttonBase} ${variants[variant]} ${className}`}
+    >
       {children}
     </Link>
   );

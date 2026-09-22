@@ -14,12 +14,10 @@ import { ANSWERS, T0, WRONG, daysLater } from "./helpers";
 import { driveLecture, type AnswerFn } from "./driver";
 
 /** Fail ATP depletion on its first, unaided attempt only. */
-const failAtpOnce: AnswerFn = (step) => {
-  if (step.kind === "RETRIEVE" && step.concept.id === "c-atp-depletion") {
-    return WRONG;
-  }
-  return ANSWERS[step.concept.id] ?? WRONG;
-};
+const failAtpOnce: AnswerFn = (step) =>
+  step.kind === "RETRIEVE" && step.concept.id === "c-atp-depletion"
+    ? WRONG
+    : (ANSWERS[step.concept.id] ?? WRONG);
 
 function lectureOneWithWeakAtp() {
   return driveLecture(createLearnerState(), DEMO_LECTURE_1, T0, failAtpOnce).learner;

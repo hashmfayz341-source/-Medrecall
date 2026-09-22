@@ -113,6 +113,8 @@ export function LearnSession({ lectureId }: { lectureId: string }) {
       <Shell>
         <Card
           data-testid="feedback"
+          data-concept-id={concept.id}
+          data-mastery={stillWeak ? "WEAK" : masteryOf(concept.id)}
           className={grade.correct ? "border-emerald-300" : "border-red-300"}
         >
           <div className="flex flex-wrap items-center gap-3">
@@ -280,7 +282,11 @@ export function LearnSession({ lectureId }: { lectureId: string }) {
 
   return (
     <Shell>
-      <Card data-testid={testId}>
+      <Card
+        data-testid={testId}
+        data-concept-id={step.concept.id}
+        data-item-id={step.item.id}
+      >
         {step.kind === "INTERLEAVE" && (
           <div
             data-testid="interleave-banner"
