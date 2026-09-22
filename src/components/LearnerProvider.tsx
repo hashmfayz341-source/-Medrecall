@@ -10,31 +10,44 @@ import {
   useState,
 } from "react";
 import {
+  addIngestedDocument,
+  addLecture,
   applyOverrides,
   createOverrides,
+  editConcept,
   setConceptStatus,
+  setConceptStatuses,
+  type ConceptEdit,
   type CurriculumOverrides,
+  type IngestedDocument,
 } from "@/lib/domain/curriculum";
 import { pathologyCurriculum } from "@/lib/content/pathology";
 import { createLearnerState } from "@/lib/engine/tutor";
-import {
-  LocalStorageLearnerRepository,
-} from "@/lib/persistence/localStorage";
+import { LocalStorageLearnerRepository } from "@/lib/persistence/localStorage";
 import { LocalStorageCurriculumRepository } from "@/lib/persistence/curriculumStore";
 import type {
+  Concept,
   ConceptStatus,
   Curriculum,
   LearnerState,
+  Lecture,
 } from "@/lib/domain/types";
 
 interface LearnerContextValue {
-  /** Curriculum with approval-status overrides applied. */
+  /** Authored content + ingested material + edits + approval decisions. */
   curriculum: Curriculum;
   learner: LearnerState;
   /** False until localStorage has been read on the client. */
   ready: boolean;
   setLearner: (next: LearnerState) => void;
   updateConceptStatus: (conceptId: string, status: ConceptStatus) => void;
+  updateConceptStatuses: (conceptIds: readonly string[], status: ConceptStatus) => void;
+  updateConceptText: (conceptId: string, edit: ConceptEdit) => void;
+  createLecture: (lecture: Lecture) => void;
+  storeIngestedDocument: (
+    ingested: IngestedDocument,
+    concepts: readonly Concept[],
+  ) => void;
   resetAll: () => void;
 }
 
@@ -62,15 +75,45 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
     learnerRepo.current.save(next);
   }, []);
 
-  const updateConceptStatus = useCallback(
-    (conceptId: string, status: ConceptStatus) => {
+  /** Apply a change to curriculum state and persist it in one step. */
+  const mutate = useCallback(
+    (fn: (current: CurriculumOverrides) => CurriculumOverrides) => {
       setOverrides((current) => {
-        const next = setConceptStatus(current, conceptId, status);
+        const next = fn(current);
         curriculumRepo.current.save(next);
         return next;
       });
     },
     [],
+  );
+
+  const updateConceptStatus = useCallback(
+    (conceptId: string, status: ConceptStatus) =>
+      mutate((current) => setConceptStatus(current, conceptId, status)),
+    [mutate],
+  );
+
+  const updateConceptStatuses = useCallback(
+    (conceptIds: readonly string[], status: ConceptStatus) =>
+      mutate((current) => setConceptStatuses(current, conceptIds, status)),
+    [mutate],
+  );
+
+  const updateConceptText = useCallback(
+    (conceptId: string, edit: ConceptEdit) =>
+      mutate((current) => editConcept(current, conceptId, edit)),
+    [mutate],
+  );
+
+  const createLecture = useCallback(
+    (lecture: Lecture) => mutate((current) => addLecture(current, lecture)),
+    [mutate],
+  );
+
+  const storeIngestedDocument = useCallback(
+    (ingested: IngestedDocument, concepts: readonly Concept[]) =>
+      mutate((current) => addIngestedDocument(current, ingested, concepts)),
+    [mutate],
   );
 
   const resetAll = useCallback(() => {
@@ -87,8 +130,30 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
   );
 
   const value = useMemo<LearnerContextValue>(
-    () => ({ curriculum, learner, ready, setLearner, updateConceptStatus, resetAll }),
-    [curriculum, learner, ready, setLearner, updateConceptStatus, resetAll],
+    () => ({
+      curriculum,
+      learner,
+      ready,
+      setLearner,
+      updateConceptStatus,
+      updateConceptStatuses,
+      updateConceptText,
+      createLecture,
+      storeIngestedDocument,
+      resetAll,
+    }),
+    [
+      curriculum,
+      learner,
+      ready,
+      setLearner,
+      updateConceptStatus,
+      updateConceptStatuses,
+      updateConceptText,
+      createLecture,
+      storeIngestedDocument,
+      resetAll,
+    ],
   );
 
   return (

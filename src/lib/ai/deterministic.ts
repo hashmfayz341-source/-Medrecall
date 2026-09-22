@@ -1,5 +1,5 @@
-import { pathologyCurriculum } from "@/lib/content/pathology";
 import { gradeAnswer, type GradeResult } from "@/lib/grading";
+import { generateCandidates } from "@/lib/ingestion/extractor";
 import type { Concept, RetrievalItem } from "@/lib/domain/types";
 import type {
   AiProvider,
@@ -9,7 +9,7 @@ import type {
 } from "./provider";
 
 /**
- * The Milestone 1 provider: authored, deterministic, no API key, no network.
+ * The deterministic provider: authored behaviour, no API key, no network.
  *
  * It implements the same interface a model-backed provider will, so swapping
  * one in later is a single binding change in `getProvider()` — and this
@@ -18,15 +18,23 @@ import type {
 export class DeterministicProvider implements AiProvider {
   readonly name = "deterministic";
 
-  /** Returns the authored concepts for a document, as DRAFT candidates. */
+  /**
+   * Extract candidate concepts from a document's pages.
+   *
+   * Every concept is DRAFT and carries the page and verbatim sentence it came
+   * from. Nothing is asserted that the source does not already say.
+   */
   async extractConcepts(input: ExtractConceptsInput): Promise<Concept[]> {
-    return pathologyCurriculum.concepts
-      .filter(
-        (c) =>
-          c.lectureId === input.lectureId &&
-          c.source.documentId === input.document.id,
-      )
-      .map((c) => ({ ...c, status: "DRAFT" as const }));
+    const { document } = input;
+    return generateCandidates(
+      {
+        id: document.id,
+        title: document.title,
+        pageCount: document.pages.length,
+        pages: document.pages,
+      },
+      { courseId: input.courseId, lectureId: input.lectureId },
+    );
   }
 
   async generateTeachingExplanation(input: TeachingInput): Promise<string> {

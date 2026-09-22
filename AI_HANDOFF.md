@@ -14,7 +14,8 @@ not the student, decides what comes next.
 2. `src/lib/domain/mastery.ts` — the rule that defines the product
 3. `src/lib/domain/gate.ts` — the safety rule
 4. `src/lib/engine/tutor.ts` — orchestration; `getNextStep()` is the heart
-5. `ARCHITECTURE.md` — why each of those looks the way it does
+5. `src/lib/ingestion/extractor.ts` — how uploaded PDFs become DRAFT candidates
+6. `ARCHITECTURE.md` — why each of those looks the way it does
 
 ## Rules you must not quietly break
 
@@ -37,10 +38,24 @@ verbatim excerpt. Excerpts must be genuine substrings of the cited page;
 `tests/unit/grading.test.ts` asserts it and has already caught two paraphrased
 quotes.
 
-**5. API keys stay server-side.** `lib/ai/index.ts` must never be imported into
+**5. Extraction selects; it never asserts.** A candidate's title is a span of
+its source sentence, its `summary` IS that sentence, and its `source.excerpt`
+is the same text. Tests assert all three for every candidate. When a model
+starts writing explanations, generated prose must still be consistent with, and
+cite, the stored excerpt. Prerequisites are only linked where the earlier
+concept's title appears literally in the later sentence — never inferred from
+subject knowledge.
+
+**6. A chunk with no ACTIVE concepts is never complete.** `[].every(...)` is
+true, so the original completion rule let an all-DRAFT chunk complete on being
+read and unlock the next lecture. `isChunkComplete()` now requires at least one
+ACTIVE concept and `getNextStep()` returns `AWAITING_APPROVAL`. Any future
+notion of completion must mean "approved and retrieved", never "seen".
+
+**7. API keys stay server-side.** `lib/ai/index.ts` must never be imported into
 a client component. Nothing goes through `NEXT_PUBLIC_*`.
 
-**6. Keep the engine out of React.** `lib/domain` is pure and imports nothing
+**8. Keep the engine out of React.** `lib/domain` is pure and imports nothing
 outward. The whole tutor runs headless in tests — keep it that way.
 
 ## How the session loop works
@@ -53,6 +68,7 @@ outward. The whole tutor runs headless in tests — keep it that way.
 | `RETRIEVE` | First unaided test (`INITIAL`) | `recordAttempt()` |
 | `REMEDIATE` | Re-teach after a failure (`IMMEDIATE_REMEDIATION`) | `recordAttempt()` |
 | `INTERLEAVE` | Weak/due concept from an earlier lecture (`INTERLEAVED`) | `recordAttempt()` |
+| `AWAITING_APPROVAL` | Chunk has no ACTIVE concepts yet | approve drafts |
 | `LECTURE_COMPLETE` | Nothing left in this lecture | — |
 
 The UI is a thin driver: ask for the step, render it, call back, repeat.
@@ -68,7 +84,12 @@ once per chunk) → teach → untested concepts → complete.
 Two stores, deliberately separate (AD-8):
 
 - `medrecall.learner.v1` — per-learner progress, FSRS cards, completion
-- `medrecall.curriculum.v1` — concept approval overrides (shared curriculum)
+- `medrecall.curriculum.v1` — shared curriculum: approval decisions
+  (`statusById`), human edits (`edits`), user-created lectures, ingested
+  documents with their generated chunks, and candidate concepts
+
+`statusById` and `edits` are separate on purpose: editing a draft must never
+approve it. `migrateOverrides()` upgrades a v1 store and keeps its approvals.
 
 Both are version-checked on read; corrupt or future-version data returns `null`
 rather than throwing. Completion is **derived** by `reconcile()` and
@@ -83,6 +104,11 @@ rather than throwing. Completion is **derived** by `reconcile()` and
 `getProvider()`. `extractConcepts()` must return `status: "DRAFT"` with a
 populated `SourceRef`. Run it server-side only.
 
+**A real extraction provider** — implement `extractConcepts` in a new
+`AiProvider`. It must return `status: "DRAFT"` with a populated `SourceRef`,
+and run server-side inside `/api/ingest`. `DeterministicProvider` stays as the
+offline fallback and the test oracle.
+
 **A new course** — mirror `src/lib/content/pathology.ts`. Chunks are 2–5 pages.
 Excerpts must be verbatim. Give each concept at least two retrieval items so
 remediation can use a different form from the initial question.
@@ -96,7 +122,7 @@ above that interface knows where state lives.
 npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
 ```
 
-87 unit tests, 16 E2E tests across iPad and desktop viewports. The E2E suite
+147 unit tests, 28 E2E tests across iPad and desktop viewports. The E2E suite
 drives the real UI through the complete demo journey, including the deliberate
 ATP-depletion failure.
 
@@ -117,8 +143,17 @@ Chromium; the config prefers it over downloading.
   Chromium with an iPad viewport, DPR and touch so one browser runs everything.
 - **Two source excerpts were stitched from separate sentences** and failed the
   verbatim-provenance test. Quote, do not paraphrase.
+- **Bundling pdfjs breaks it.** It resolves its worker through a runtime
+  dynamic import; bundled, every upload fails with "Setting up fake worker
+  failed". `serverExternalPackages: ["pdfjs-dist"]` fixes it. Unit tests under
+  plain Node never reproduce this — which is why E2E runs against a production
+  build.
+- **An all-DRAFT chunk used to complete itself** and unlock the next lecture,
+  because `[].every(...)` is true. See rule 6 above.
 
 ## Current limitations
 
-Per-browser persistence, keyword grading, TypeScript-authored curriculum, no
-concept text editing, `reconcile()` unindexed. See ROADMAP.md.
+Per-browser persistence, keyword grading, no OCR for scanned PDFs, no merging
+of duplicate candidates across documents, prerequisite graph not hand-editable,
+"View Source" shows the excerpt rather than the page image, one fixed course
+(lectures can be created), `reconcile()` unindexed. See ROADMAP.md.

@@ -43,15 +43,31 @@ weakness — only a later spaced or interleaved success does. This is the rule
 most learning apps get wrong, and it is enforced in
 `src/lib/domain/mastery.ts`.
 
-## Milestone 1 status
+## Status
 
-A complete deterministic tutor. **No AI key required.** The demo course is
-Pathology, with two lectures: Cell Injury and Inflammation.
+**Milestone 1 — deterministic tutor.** Complete. **No AI key required.** The
+demo course is Pathology: Cell Injury and Inflammation. The full journey works
+end to end: learn in chunks → fail ATP depletion → it is marked WEAK and
+re-taught → immediate remediation does *not* clear the weakness → finish
+Lecture 1 → Lecture 2 unlocks → ATP depletion is injected into Lecture 2 →
+answer it correctly → mastery improves → reload and everything persists.
 
-The full journey works end to end: learn in chunks → fail ATP depletion → it is
-marked WEAK and re-taught → immediate remediation does *not* clear the weakness
-→ finish Lecture 1 → Lecture 2 unlocks → ATP depletion is injected into Lecture
-2 → answer it correctly → mastery improves → reload and everything persists.
+**Milestone 2 — PDF ingestion.** Complete. Upload a PDF to a lecture and
+MedRecall extracts its text page by page, proposes candidate concepts, and
+holds every one of them as DRAFT until you review it:
+
+```
+Upload PDF → extract text page-by-page → candidate concepts (DRAFT)
+   → Review Drafts: edit / approve / discard → ACTIVE → the existing tutor
+```
+
+Extraction **selects, it never asserts**: a concept's title is a span of its
+source sentence, its explanation *is* that sentence, and its excerpt is that
+same text. Nothing is claimed that the uploaded document does not already say.
+
+Unreviewed material cannot complete a chunk or unlock a lecture — a part of a
+lecture whose candidates are all still DRAFT reports that it is waiting on your
+review.
 
 ## Getting started
 
@@ -65,9 +81,9 @@ Verification:
 ```bash
 npm run lint
 npm run typecheck
-npm run test         # 87 unit tests
+npm run test         # 147 unit tests
 npm run build
-npm run e2e          # 16 Playwright tests, iPad + desktop viewports
+npm run e2e          # 28 Playwright tests, iPad + desktop viewports
 ```
 
 `npm run verify` chains lint, typecheck, unit tests and the production build.
@@ -91,17 +107,38 @@ src/
     domain/       Pure types, approval gate, mastery rules, curriculum state
     engine/       Tutor orchestration, priority queue, FSRS scheduling
     grading/      Deterministic free-recall grading
+    ingestion/    PDF page extraction + candidate concept generation
     persistence/  Repository interfaces + browser-local implementations
     content/      The authored Pathology demo curriculum
     ai/           Provider-agnostic AI interface + deterministic implementation
 tests/
-  unit/           Vitest: gate, mastery, grading, unlock, interleaving, journey
-  e2e/            Playwright: the full journey at iPad and desktop viewports
+  unit/           Vitest: gate, mastery, grading, unlock, interleaving,
+                  journey, ingestion, draft lifecycle
+  e2e/            Playwright: the tutor journey and the ingestion journey,
+                  each at iPad and desktop viewports
+  fixtures/       Generated PDFs (see scripts/make-fixture-pdf.mjs)
 ```
 
 The learning engine is deliberately **not** inside React components. Everything
 in `lib/domain` is pure and framework-free; you can run the whole tutor in a
 test without rendering anything.
+
+## Uploading your own material
+
+Go to **Add material**, pick a lecture (or create one), and upload a PDF.
+MedRecall extracts the text page by page and proposes candidates. Review them
+under **Concept review**: edit the wording, approve what is right, discard what
+is not. Editing a draft does *not* approve it — those stay separate decisions.
+
+Text-based PDFs only. A scanned PDF with no text layer is rejected with an
+explanation rather than silently yielding nothing; OCR is not part of this
+milestone.
+
+Regenerate the test fixtures with:
+
+```bash
+node scripts/make-fixture-pdf.mjs
+```
 
 ## Documentation
 
