@@ -7,6 +7,7 @@ import {
   type CurriculumOverrides,
 } from "@/lib/domain/curriculum";
 import {
+  acceptIncomingLearnerState,
   hasLegacyIdentities,
   legacyDocumentIds,
   quarantineLegacyLearnerState,
@@ -127,7 +128,9 @@ describe("PDF B cannot inherit PDF A's legacy learner state", () => {
     for (const concept of LEGACY_CONCEPTS) {
       expect(result.learner.progress[concept.id], concept.id).toBeUndefined();
     }
-    expect(result.quarantinedConceptIds).toHaveLength(LEGACY_CONCEPTS.length);
+    // Only records that actually existed are reported, so the count shown to
+    // the learner reflects progress genuinely discarded.
+    expect(result.quarantinedConceptIds.sort()).toEqual(["legacy-c0", "legacy-c1"]);
   });
 
   it("drops taught and completed state for the untrusted chunk", () => {
@@ -299,5 +302,44 @@ describe("malformed learner state never reaches the engine", () => {
     const result = sanitizeLearnerState(JSON.parse(JSON.stringify(valid)));
     expect(result!.dropped).toEqual([]);
     expect(Object.keys(result!.state.progress)).toEqual(["c-hypoxia"]);
+  });
+});
+
+describe("storage-event path applies the same quarantine", () => {
+  it("filters learner state arriving from another tab", () => {
+    const overrides = legacyOverrides();
+    // A stale tab writes back state recorded before the quarantine ran.
+    const fromStaleTab = pdfALearnerState();
+    const accepted = acceptIncomingLearnerState(fromStaleTab, overrides);
+
+    for (const concept of LEGACY_CONCEPTS) {
+      expect(accepted.learner.progress[concept.id], concept.id).toBeUndefined();
+    }
+    expect(accepted.learner.taughtChunkIds).not.toContain(LEGACY_CHUNK.id);
+    expect(accepted.learner.completedChunkIds).not.toContain(LEGACY_CHUNK.id);
+    expect(accepted.learner.completedLectureIds).not.toContain(LEGACY_LECTURE);
+    expect(accepted.learner.injectedByChunk[LEGACY_CHUNK.id]).toBeUndefined();
+    expect(accepted.quarantinedConceptIds.length).toBeGreaterThan(0);
+  });
+
+  it("keeps authored progress that arrives from another tab", () => {
+    const accepted = acceptIncomingLearnerState(pdfALearnerState(), legacyOverrides());
+    expect(accepted.learner.progress["c-hypoxia"]?.mastery).toBe("STABLE");
+    expect(accepted.learner.taughtChunkIds).toContain("chunk-ci-1");
+  });
+
+  it("passes state through untouched when curriculum state is unavailable", () => {
+    const learner = pdfALearnerState();
+    const accepted = acceptIncomingLearnerState(learner, null);
+    expect(accepted.learner).toBe(learner);
+    expect(accepted.quarantinedConceptIds).toEqual([]);
+  });
+
+  it("is idempotent: re-accepting already-clean state changes nothing", () => {
+    const overrides = legacyOverrides();
+    const once = acceptIncomingLearnerState(pdfALearnerState(), overrides);
+    const twice = acceptIncomingLearnerState(once.learner, overrides);
+    expect(twice.learner.progress).toEqual(once.learner.progress);
+    expect(twice.quarantinedConceptIds).toEqual([]);
   });
 });

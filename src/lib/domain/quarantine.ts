@@ -77,35 +77,88 @@ export function quarantineLegacyLearnerState(
     }
   }
 
+  // Track what was actually removed, not what would have been: the count is
+  // shown to the learner, so re-running on already-clean state must not claim
+  // that more progress was discarded.
+  const removedConceptIds: string[] = [];
+  const removedChunkIds = new Set<string>();
+  const removedLectureIds: string[] = [];
+
   // Mastery, attempts and FSRS schedule for untrusted concepts.
   const progress: LearnerState["progress"] = {};
   for (const [conceptId, record] of Object.entries(learner.progress)) {
-    if (!conceptIds.has(conceptId)) progress[conceptId] = record;
+    if (conceptIds.has(conceptId)) {
+      removedConceptIds.push(conceptId);
+    } else {
+      progress[conceptId] = record;
+    }
   }
 
   // Interleaving bookkeeping, both by chunk and by injected concept.
   const injectedByChunk: LearnerState["injectedByChunk"] = {};
   for (const [chunkId, injected] of Object.entries(learner.injectedByChunk)) {
-    if (chunkIds.has(chunkId)) continue;
+    if (chunkIds.has(chunkId)) {
+      removedChunkIds.add(chunkId);
+      continue;
+    }
     const kept = injected.filter((id) => !conceptIds.has(id));
+    if (kept.length !== injected.length) removedChunkIds.add(chunkId);
     if (kept.length > 0) injectedByChunk[chunkId] = kept;
   }
+
+  const taughtChunkIds = learner.taughtChunkIds.filter((id) => {
+    if (!chunkIds.has(id)) return true;
+    removedChunkIds.add(id);
+    return false;
+  });
+  const completedChunkIds = learner.completedChunkIds.filter((id) => {
+    if (!chunkIds.has(id)) return true;
+    removedChunkIds.add(id);
+    return false;
+  });
+  // A lecture that contained quarantined material is no longer complete, so it
+  // must not keep a later lecture unlocked on its behalf.
+  const completedLectureIds = learner.completedLectureIds.filter((id) => {
+    if (!lectureIds.has(id)) return true;
+    removedLectureIds.push(id);
+    return false;
+  });
 
   return {
     learner: {
       ...learner,
       progress,
-      taughtChunkIds: learner.taughtChunkIds.filter((id) => !chunkIds.has(id)),
-      completedChunkIds: learner.completedChunkIds.filter((id) => !chunkIds.has(id)),
-      // A lecture that contained quarantined material is no longer complete,
-      // so it must not keep a later lecture unlocked on its behalf.
-      completedLectureIds: learner.completedLectureIds.filter(
-        (id) => !lectureIds.has(id),
-      ),
+      taughtChunkIds,
+      completedChunkIds,
+      completedLectureIds,
       injectedByChunk,
     },
-    quarantinedConceptIds: [...conceptIds],
-    quarantinedChunkIds: [...chunkIds],
-    quarantinedLectureIds: [...lectureIds],
+    quarantinedConceptIds: removedConceptIds,
+    quarantinedChunkIds: [...removedChunkIds],
+    quarantinedLectureIds: removedLectureIds,
   };
+}
+
+/**
+ * Accept learner state arriving from storage — at hydration, or from another
+ * tab through a `storage` event.
+ *
+ * Both paths go through here so they cannot drift apart: a stale tab holding
+ * pre-quarantine state will happily write it back, and re-injecting mastery,
+ * attempts, FSRS schedule or completion for an untrusted identity is exactly
+ * what the hydration-time quarantine exists to prevent.
+ */
+export function acceptIncomingLearnerState(
+  incoming: LearnerState,
+  overrides: CurriculumOverrides | null,
+): QuarantineResult {
+  if (!overrides) {
+    return {
+      learner: incoming,
+      quarantinedConceptIds: [],
+      quarantinedChunkIds: [],
+      quarantinedLectureIds: [],
+    };
+  }
+  return quarantineLegacyLearnerState(incoming, overrides);
 }

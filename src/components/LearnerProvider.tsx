@@ -25,7 +25,7 @@ import {
 import { pathologyCurriculum } from "@/lib/content/pathology";
 import { createLearnerState } from "@/lib/engine/tutor";
 import { LocalStorageLearnerRepository, STORAGE_KEY } from "@/lib/persistence/localStorage";
-import { quarantineLegacyLearnerState } from "@/lib/domain/quarantine";
+import { acceptIncomingLearnerState } from "@/lib/domain/quarantine";
 import { LocalStorageCurriculumRepository, CURRICULUM_STORAGE_KEY } from "@/lib/persistence/curriculumStore";
 import type {
   Concept,
@@ -66,6 +66,22 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
   const learnerRepo = useRef(new LocalStorageLearnerRepository());
   const curriculumRepo = useRef(new LocalStorageCurriculumRepository());
 
+  /** Filter incoming learner state, persist and report any quarantine. */
+  const acceptLearnerState = useCallback(
+    (incoming: LearnerState, overridesForCheck: CurriculumOverrides | null) => {
+      const result = acceptIncomingLearnerState(incoming, overridesForCheck);
+      setLearnerState(result.learner);
+      if (result.quarantinedConceptIds.length > 0) {
+        learnerRepo.current.save(result.learner);
+        setQuarantined((current) =>
+          Math.max(current, result.quarantinedConceptIds.length),
+        );
+      }
+      return result;
+    },
+    [],
+  );
+
   // Hydrate from storage after mount so server and client markup agree.
   useEffect(() => {
     const storedLearner = learnerRepo.current.load();
@@ -80,31 +96,33 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
       // Progress recorded against a colliding legacy document identity may
       // belong to a different PDF entirely, so it is discarded once rather
       // than silently carried into re-approved material.
-      const result = storedOverrides
-        ? quarantineLegacyLearnerState(storedLearner, storedOverrides)
-        : { learner: storedLearner, quarantinedConceptIds: [] };
-
-      setLearnerState(result.learner);
-      if (result.quarantinedConceptIds.length > 0) {
-        learnerRepo.current.save(result.learner);
-        setQuarantined(result.quarantinedConceptIds.length);
-      }
+      acceptLearnerState(storedLearner, storedOverrides);
     }
 
     setReady(true);
     function onStorage(event: StorageEvent) {
+      // Always refresh curriculum first: the quarantine decision depends on
+      // which document identities are currently known to be untrusted.
+      const latestOverrides = curriculumRepo.current.load();
+      if (latestOverrides) overridesRef.current = latestOverrides;
+
       if (event.key === CURRICULUM_STORAGE_KEY || event.key === null) {
-        const latest = curriculumRepo.current.load() ?? createOverrides();
+        const latest = latestOverrides ?? createOverrides();
         overridesRef.current = latest;
         setOverrides(latest);
       }
       if (event.key === STORAGE_KEY || event.key === null) {
-        setLearnerState(learnerRepo.current.load() ?? createLearnerState());
+        // A stale tab can write back learner state from before the quarantine,
+        // so incoming state is filtered again rather than trusted.
+        acceptLearnerState(
+          learnerRepo.current.load() ?? createLearnerState(),
+          overridesRef.current,
+        );
       }
     }
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, []);
+  }, [acceptLearnerState]);
 
   const setLearner = useCallback((next: LearnerState) => {
     setLearnerState(next);

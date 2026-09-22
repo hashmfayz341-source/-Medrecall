@@ -18,7 +18,7 @@ import { buildRetrievalItems } from "./retrieval";
  * records.
  */
 
-export const CURRICULUM_OVERRIDES_VERSION = 3;
+export const CURRICULUM_OVERRIDES_VERSION = 4;
 
 /** Legacy ingestion hashed a buffer after pdfjs had detached it. */
 export function hasLegacyDocumentIdentity(documentId: string): boolean {
@@ -102,7 +102,10 @@ function conceptShape(value: unknown): boolean {
 export function migrateOverrides(stored: unknown): CurriculumOverrides | null {
   if (!record(stored)) return null;
   const value = stored as Partial<CurriculumOverrides>;
-  if (value.version !== 1 && value.version !== 2 && value.version !== CURRICULUM_OVERRIDES_VERSION) return null;
+  const KNOWN_VERSIONS = [1, 2, 3, CURRICULUM_OVERRIDES_VERSION];
+  if (typeof value.version !== "number" || !KNOWN_VERSIONS.includes(value.version)) {
+    return null;
+  }
   if (!record(value.statusById) || !Object.values(value.statusById).every(status)) return null;
   if (value.edits !== undefined && (!record(value.edits) || !Object.values(value.edits).every((edit) => record(edit) &&
     (edit.title === undefined || typeof edit.title === "string") && (edit.summary === undefined || typeof edit.summary === "string")))) return null;
@@ -119,19 +122,40 @@ export function migrateOverrides(stored: unknown): CurriculumOverrides | null {
     ingested: value.ingested ?? [],
     concepts: value.concepts ?? [],
   };
-  // Old same-name uploads could replace text while retaining an unrelated
-  // approval. The original bytes are gone; do not invent a safe identity or
-  // silently trust that approval. Authored/M1 and new identities are retained.
-  const legacyDocuments = new Set(migrated.ingested
-    .filter((entry) => hasLegacyDocumentIdentity(entry.document.id))
-    .map((entry) => entry.document.id));
-  migrated.statusById = { ...migrated.statusById };
-  for (const concept of migrated.concepts) {
-    if (value.version < 3 && legacyDocuments.has(concept.source.documentId) &&
-      (migrated.statusById[concept.id] ?? concept.status) === "ACTIVE") {
-      migrated.statusById[concept.id] = "DRAFT";
+  // An old same-name upload could replace a document's text while keeping the
+  // previous reviewer's decisions, because both took the same colliding id.
+  //
+  // Every review artefact tied to such an id is therefore untrustworthy, not
+  // just an approval: a DISCARD may have judged content that is no longer
+  // there, and an EDIT may have rewritten a different document's concept. All
+  // of it is dropped so the material is reviewed again from scratch against
+  // whatever text is actually stored now.
+  //
+  // Version 3 performed only half of this (it reset ACTIVE and kept edits), so
+  // stores already at v3 are cleaned again here.
+  if (value.version < CURRICULUM_OVERRIDES_VERSION) {
+    const legacyDocuments = new Set(
+      migrated.ingested
+        .filter((entry) => hasLegacyDocumentIdentity(entry.document.id))
+        .map((entry) => entry.document.id),
+    );
+
+    const statusById = { ...migrated.statusById };
+    const edits = { ...migrated.edits };
+    for (const concept of migrated.concepts) {
+      const untrusted =
+        legacyDocuments.has(concept.source.documentId) ||
+        hasLegacyDocumentIdentity(concept.source.documentId);
+      if (!untrusted) continue;
+      // Reset regardless of what the decision was — ACTIVE, DISCARDED or an
+      // edit. Authored Milestone 1 ids never collided and are left alone.
+      statusById[concept.id] = "DRAFT";
+      delete edits[concept.id];
     }
+    migrated.statusById = statusById;
+    migrated.edits = edits;
   }
+
   return migrated;
 }
 

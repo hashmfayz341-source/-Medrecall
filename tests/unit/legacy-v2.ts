@@ -104,12 +104,27 @@ export const LEGACY_CHUNK: TeachingChunk = {
     LEGACY_CONCEPTS.map((c) => `• ${c.summary}`).join("\n"),
 };
 
+/** PDF B's own content, sharing PDF A's ids because the identity collided. */
+export const PDF_B_CONCEPTS: Concept[] = LEGACY_CONCEPTS.map((c) => ({
+  ...c,
+  title: `B ${c.title}`,
+  summary: `PDF B: ${c.summary}`,
+  source: { ...c.source, excerpt: `PDF B: ${c.summary}` },
+}));
+
 /** A complete v2 store, as written by Milestone 2 main. */
-export function legacyV2Payload(statusById: Record<string, string> = {}) {
+export function legacyV2Payload(
+  statusById: Record<string, string> = {},
+  options: {
+    edits?: Record<string, { title?: string; summary?: string }>;
+    concepts?: Concept[];
+    version?: number;
+  } = {},
+) {
   return {
-    version: 2,
+    version: options.version ?? 2,
     statusById,
-    edits: {},
+    edits: options.edits ?? {},
     lectures: [
       {
         id: LEGACY_LECTURE,
@@ -129,6 +144,6 @@ export function legacyV2Payload(statusById: Record<string, string> = {}) {
         ingestedAt: "2026-09-20T10:00:00.000Z",
       },
     ],
-    concepts: LEGACY_CONCEPTS,
+    concepts: options.concepts ?? LEGACY_CONCEPTS,
   };
 }
