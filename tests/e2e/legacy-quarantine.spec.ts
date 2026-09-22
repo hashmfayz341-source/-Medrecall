@@ -289,3 +289,163 @@ test("an older curriculum payload is rewritten as the current version", async ({
   expect(onDisk.edits[LEGACY_CONCEPT]).toBeUndefined();
   expect(raw).not.toContain("EDIT FROM PDF A");
 });
+
+/** Curriculum with no ingested material at all — nothing is untrusted yet. */
+function cleanCurriculum() {
+  return {
+    version: 4,
+    statusById: {},
+    edits: {},
+    lectures: [],
+    ingested: [],
+    concepts: [],
+  };
+}
+
+/** Learner state mixing legacy material with authored Milestone 1 progress. */
+function mixedLearnerState() {
+  const schedule = {
+    due: "2026-09-25T10:00:00.000Z",
+    stability: 5,
+    difficulty: 5,
+    elapsed_days: 1,
+    scheduled_days: 3,
+    learning_steps: 0,
+    reps: 6,
+    lapses: 0,
+    state: 2,
+  };
+  const record = (conceptId: string, mastery: string) => ({
+    conceptId,
+    mastery,
+    consecutiveSpacedSuccesses: 3,
+    totalAttempts: 6,
+    totalCorrect: 6,
+    everWrong: false,
+    immediateRemediationPassed: false,
+    lastAttemptAt: "2026-09-22T10:00:00.000Z",
+    schedule,
+  });
+  return {
+    version: 1,
+    progress: {
+      [LEGACY_CONCEPT]: record(LEGACY_CONCEPT, "STRONG"),
+      "c-hypoxia": record("c-hypoxia", "STABLE"),
+    },
+    taughtChunkIds: [`${LEGACY_DOC}-chunk-1`, "chunk-ci-1"],
+    completedChunkIds: [`${LEGACY_DOC}-chunk-1`, "chunk-ci-1"],
+    completedLectureIds: [LEGACY_LECTURE],
+    injectedByChunk: {
+      [`${LEGACY_DOC}-chunk-1`]: [LEGACY_CONCEPT],
+      "chunk-inf-1": ["c-hypoxia"],
+    },
+  };
+}
+
+/** Seed clean curriculum + unsafe learner state, then load the page. */
+async function seedCleanCurriculumWithLegacyLearner(page: Page) {
+  await page.goto("/");
+  await page.evaluate(
+    ([curriculumKey, learnerKey, curriculum, learner]) => {
+      window.localStorage.clear();
+      window.localStorage.setItem(curriculumKey as string, curriculum as string);
+      window.localStorage.setItem(learnerKey as string, learner as string);
+    },
+    [
+      CURRICULUM_KEY,
+      LEARNER_KEY,
+      JSON.stringify(cleanCurriculum()),
+      JSON.stringify(mixedLearnerState()),
+    ],
+  );
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Pathology" })).toBeVisible();
+
+  // Nothing is untrusted yet, so the legacy records legitimately survive.
+  const before = await storedLearner(page);
+  expect(before.progress[LEGACY_CONCEPT]).toBeDefined();
+}
+
+/** Write legacy curriculum from "another tab" and fire ONLY that event. */
+async function dispatchCurriculumEvent(page: Page, payload: unknown) {
+  await page.evaluate(
+    ([curriculumKey, curriculum]) => {
+      window.localStorage.setItem(curriculumKey as string, curriculum as string);
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: curriculumKey as string,
+          newValue: curriculum as string,
+        }),
+      );
+    },
+    [CURRICULUM_KEY, JSON.stringify(payload)],
+  );
+}
+
+async function expectQuarantined(page: Page) {
+  await expect
+    .poll(async () => (await storedLearner(page))?.progress?.[LEGACY_CONCEPT])
+    .toBeUndefined();
+
+  const after = await storedLearner(page);
+  expect(after.taughtChunkIds).not.toContain(`${LEGACY_DOC}-chunk-1`);
+  expect(after.completedChunkIds).not.toContain(`${LEGACY_DOC}-chunk-1`);
+  expect(after.completedLectureIds).not.toContain(LEGACY_LECTURE);
+  expect(after.injectedByChunk[`${LEGACY_DOC}-chunk-1`]).toBeUndefined();
+
+  // Authored Milestone 1 progress is untouched.
+  expect(after.progress["c-hypoxia"]?.mastery).toBe("STABLE");
+  expect(after.taughtChunkIds).toContain("chunk-ci-1");
+  expect(after.completedChunkIds).toContain("chunk-ci-1");
+  expect(after.injectedByChunk["chunk-inf-1"]).toEqual(["c-hypoxia"]);
+  return after;
+}
+
+test("a curriculum-only event re-quarantines the loaded learner state", async ({
+  page,
+}) => {
+  await seedCleanCurriculumWithLegacyLearner(page);
+
+  // Only the curriculum changes. No learner storage event is fired, and the
+  // page is never reloaded — the unsafe state must not stay live until then.
+  await dispatchCurriculumEvent(page, legacyCurriculum());
+
+  await expectQuarantined(page);
+});
+
+test("curriculum-event quarantine is idempotent", async ({ page }) => {
+  await seedCleanCurriculumWithLegacyLearner(page);
+  await dispatchCurriculumEvent(page, legacyCurriculum());
+  const first = await expectQuarantined(page);
+
+  await dispatchCurriculumEvent(page, legacyCurriculum());
+  await page.waitForTimeout(150);
+  expect(await storedLearner(page)).toEqual(first);
+});
+
+test("either event order ends in a safe state: learner first, curriculum second", async ({
+  page,
+}) => {
+  await seedCleanCurriculumWithLegacyLearner(page);
+
+  // The learner event arrives while the curriculum still looks clean, so it
+  // cannot quarantine anything yet.
+  await page.evaluate(
+    ([learnerKey, learner]) => {
+      window.localStorage.setItem(learnerKey as string, learner as string);
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: learnerKey as string,
+          newValue: learner as string,
+        }),
+      );
+    },
+    [LEARNER_KEY, JSON.stringify(mixedLearnerState())],
+  );
+  await page.waitForTimeout(100);
+  expect((await storedLearner(page)).progress[LEGACY_CONCEPT]).toBeDefined();
+
+  // The curriculum event then reveals the identity as untrusted.
+  await dispatchCurriculumEvent(page, legacyCurriculum());
+  await expectQuarantined(page);
+});

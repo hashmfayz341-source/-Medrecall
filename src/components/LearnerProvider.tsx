@@ -62,6 +62,12 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
   const [storageError, setStorageError] = useState(false);
   const [quarantined, setQuarantined] = useState(0);
   const overridesRef = useRef(overrides);
+  // The storage handler is registered once, so it reads the current learner
+  // state through a ref rather than a stale closure.
+  const learnerRef = useRef(learner);
+  useEffect(() => {
+    learnerRef.current = learner;
+  }, [learner]);
 
   const learnerRepo = useRef(new LocalStorageLearnerRepository());
   const curriculumRepo = useRef(new LocalStorageCurriculumRepository());
@@ -106,24 +112,36 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
 
     setReady(true);
     function onStorage(event: StorageEvent) {
+      const curriculumChanged =
+        event.key === CURRICULUM_STORAGE_KEY || event.key === null;
+      const learnerChanged = event.key === STORAGE_KEY || event.key === null;
+      if (!curriculumChanged && !learnerChanged) return;
+
       // Always refresh curriculum first: the quarantine decision depends on
       // which document identities are currently known to be untrusted.
       const latestOverrides = curriculumRepo.current.load();
       if (latestOverrides) overridesRef.current = latestOverrides;
 
-      if (event.key === CURRICULUM_STORAGE_KEY || event.key === null) {
+      if (curriculumChanged) {
         const latest = latestOverrides ?? createOverrides();
         overridesRef.current = latest;
         setOverrides(latest);
       }
-      if (event.key === STORAGE_KEY || event.key === null) {
-        // A stale tab can write back learner state from before the quarantine,
-        // so incoming state is filtered again rather than trusted.
-        acceptLearnerState(
-          learnerRepo.current.load() ?? createLearnerState(),
-          overridesRef.current,
-        );
-      }
+
+      // Re-check learner state on EITHER event, not just a learner one.
+      //
+      // A curriculum event can be what first reveals a document identity as
+      // untrusted. Waiting for a separate learner event (or a reload) would
+      // leave legacy mastery, completion and interleaving state live in this
+      // tab in the meantime. Running it on both events also makes the two
+      // possible orderings converge on the same safe result.
+      //
+      // acceptLearnerState only writes when something was actually removed,
+      // so repeating this is idempotent and cannot loop.
+      acceptLearnerState(
+        learnerRepo.current.load() ?? learnerRef.current,
+        overridesRef.current,
+      );
     }
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
