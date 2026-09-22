@@ -38,3 +38,6 @@ coverage/
 # Next
 next-env.d.ts
 .next/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
