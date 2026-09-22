@@ -1,0 +1,58 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink-50: #f6f8fa;
+  --color-ink-100: #eceff3;
+  --color-ink-200: #d8dee6;
+  --color-ink-300: #b6c1ce;
+  --color-ink-400: #8494a7;
+  --color-ink-500: #5f7086;
+  --color-ink-600: #47566a;
+  --color-ink-700: #364355;
+  --color-ink-800: #232e3d;
+  --color-ink-900: #151d28;
+
+  --color-clinical-50: #edfafa;
+  --color-clinical-100: #d2f2f2;
+  --color-clinical-200: #a7e4e6;
+  --color-clinical-300: #6dcdd2;
+  --color-clinical-400: #38adb5;
+  --color-clinical-500: #1e8f99;
+  --color-clinical-600: #17727d;
+  --color-clinical-700: #165c66;
+  --color-clinical-800: #164a53;
+  --color-clinical-900: #163e46;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-ink-50);
+  color: var(--color-ink-800);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Teaching text is read for long stretches on an iPad held at arm's length. */
+.prose-teach {
+  font-size: 1.1875rem;
+  line-height: 1.75;
+  letter-spacing: 0.0025em;
+}
+
+@media (min-width: 1024px) {
+  .prose-teach {
+    font-size: 1.25rem;
+    line-height: 1.8;
+  }
+}
