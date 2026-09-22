@@ -25,6 +25,7 @@ import {
 import { pathologyCurriculum } from "@/lib/content/pathology";
 import { createLearnerState } from "@/lib/engine/tutor";
 import { LocalStorageLearnerRepository, STORAGE_KEY } from "@/lib/persistence/localStorage";
+import { quarantineLegacyLearnerState } from "@/lib/domain/quarantine";
 import { LocalStorageCurriculumRepository, CURRICULUM_STORAGE_KEY } from "@/lib/persistence/curriculumStore";
 import type {
   Concept,
@@ -59,6 +60,7 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
   const [overrides, setOverrides] = useState<CurriculumOverrides>(createOverrides);
   const [ready, setReady] = useState(false);
   const [storageError, setStorageError] = useState(false);
+  const [quarantined, setQuarantined] = useState(0);
   const overridesRef = useRef(overrides);
 
   const learnerRepo = useRef(new LocalStorageLearnerRepository());
@@ -67,12 +69,28 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
   // Hydrate from storage after mount so server and client markup agree.
   useEffect(() => {
     const storedLearner = learnerRepo.current.load();
-    if (storedLearner) setLearnerState(storedLearner);
     const storedOverrides = curriculumRepo.current.load();
+
     if (storedOverrides) {
       overridesRef.current = storedOverrides;
       setOverrides(storedOverrides);
     }
+
+    if (storedLearner) {
+      // Progress recorded against a colliding legacy document identity may
+      // belong to a different PDF entirely, so it is discarded once rather
+      // than silently carried into re-approved material.
+      const result = storedOverrides
+        ? quarantineLegacyLearnerState(storedLearner, storedOverrides)
+        : { learner: storedLearner, quarantinedConceptIds: [] };
+
+      setLearnerState(result.learner);
+      if (result.quarantinedConceptIds.length > 0) {
+        learnerRepo.current.save(result.learner);
+        setQuarantined(result.quarantinedConceptIds.length);
+      }
+    }
+
     setReady(true);
     function onStorage(event: StorageEvent) {
       if (event.key === CURRICULUM_STORAGE_KEY || event.key === null) {
@@ -188,6 +206,12 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
         <div role="status" className="border-b border-amber-300 bg-amber-50 p-4 text-amber-900">
           Earlier PDF uploads need source review because their file identity was unreliable.
           Re-upload the original PDFs and review or discard the earlier candidates before learning them.
+          {quarantined > 0 && (
+            <span data-testid="quarantine-note">
+              {" "}Progress recorded against {quarantined} of those candidates has been
+              cleared, because it may have belonged to a different document.
+            </span>
+          )}
         </div>
       )}
       {children}

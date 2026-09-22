@@ -205,15 +205,12 @@ export function buildChunks(
   const groups = chunkPageNumbers(doc.pages.map((p) => p.number));
 
   return groups.map((pageNumbers, index) => {
-    const pages = doc.pages.filter((p) => pageNumbers.includes(p.number));
     const chunkConcepts = concepts.filter((c) =>
       pageNumbers.includes(c.source.pageNumber),
     );
     const first = pageNumbers[0]!;
     const last = pageNumbers[pageNumbers.length - 1]!;
     const range = first === last ? `page ${first}` : `pages ${first}-${last}`;
-
-    const headings = pages.map((p) => p.title).join(" · ");
 
     // Deliberately provenance only. Embedding the candidate sentences here is
     // how unapproved text reached teaching in Milestone 2: the chunk is built
@@ -223,12 +220,14 @@ export function buildChunks(
       id: `${doc.id}-chunk-${index + 1}`,
       lectureId,
       order: orderOffset + index + 1,
-      title: pages[0]?.title ?? `Part ${index + 1}`,
+      // Neutral label. A raw PDF heading is unreviewed source text and must
+      // not become teaching content; it stays on the page record for review.
+      title: `Part ${index + 1}`,
       documentId: doc.id,
       pageNumbers,
       conceptIds: chunkConcepts.map((c) => c.id),
       generated: true,
-      explanation: `From ${doc.title}, ${range}${headings ? ` (${headings})` : ""}.`,
+      explanation: `From ${doc.title}, ${range}.`,
     };
   });
 }

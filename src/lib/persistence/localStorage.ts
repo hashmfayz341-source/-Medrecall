@@ -4,20 +4,99 @@ import type { LearnerStateRepository } from "./repository";
 
 export const STORAGE_KEY = "medrecall.learner.v1";
 
-/** Narrow runtime check — storage is untrusted input like any other. */
-function isLearnerState(value: unknown): value is LearnerState {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value as Partial<LearnerState>;
-  return (
-    typeof v.version === "number" &&
-    typeof v.progress === "object" &&
-    v.progress !== null &&
-    Array.isArray(v.taughtChunkIds) &&
-    Array.isArray(v.completedChunkIds) &&
-    Array.isArray(v.completedLectureIds) &&
-    typeof v.injectedByChunk === "object" &&
-    v.injectedByChunk !== null
-  );
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((v) => typeof v === "string");
+}
+
+const MASTERY_STATES = ["NEW", "LEARNING", "WEAK", "STABLE", "STRONG"];
+
+/**
+ * A schedule is only usable if every field the FSRS engine reads is present
+ * and well formed. A record with `due` missing would reach `new Date(undefined)`
+ * and put NaN through the Today queue and the scheduler.
+ */
+function isScheduleState(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (typeof value.due !== "string") return false;
+  if (Number.isNaN(new Date(value.due).getTime())) return false;
+  if (value.last_review !== undefined) {
+    if (typeof value.last_review !== "string") return false;
+    if (Number.isNaN(new Date(value.last_review).getTime())) return false;
+  }
+  return [
+    "stability",
+    "difficulty",
+    "elapsed_days",
+    "scheduled_days",
+    "learning_steps",
+    "reps",
+    "lapses",
+    "state",
+  ].every((key) => Number.isFinite(value[key]));
+}
+
+function isConceptProgress(value: unknown, conceptId: string): boolean {
+  if (!isRecord(value)) return false;
+  if (value.conceptId !== conceptId) return false;
+  if (!MASTERY_STATES.includes(String(value.mastery))) return false;
+  if (
+    !["consecutiveSpacedSuccesses", "totalAttempts", "totalCorrect"].every((key) =>
+      Number.isInteger(value[key]),
+    )
+  ) {
+    return false;
+  }
+  if (typeof value.everWrong !== "boolean") return false;
+  if (typeof value.immediateRemediationPassed !== "boolean") return false;
+  if (value.lastAttemptAt !== null && typeof value.lastAttemptAt !== "string") {
+    return false;
+  }
+  return isScheduleState(value.schedule);
+}
+
+/**
+ * Validate stored learner state, dropping individual progress records that are
+ * malformed rather than discarding a learner's entire history.
+ *
+ * Returns null only when the envelope itself cannot be trusted.
+ */
+export function sanitizeLearnerState(
+  value: unknown,
+): { state: LearnerState; dropped: string[] } | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.version !== "number") return null;
+  if (!isRecord(value.progress)) return null;
+  if (!isStringArray(value.taughtChunkIds)) return null;
+  if (!isStringArray(value.completedChunkIds)) return null;
+  if (!isStringArray(value.completedLectureIds)) return null;
+  if (!isRecord(value.injectedByChunk)) return null;
+  if (!Object.values(value.injectedByChunk).every(isStringArray)) return null;
+
+  const progress: LearnerState["progress"] = {};
+  const dropped: string[] = [];
+  for (const [conceptId, record] of Object.entries(value.progress)) {
+    if (isConceptProgress(record, conceptId)) {
+      progress[conceptId] = record as LearnerState["progress"][string];
+    } else {
+      dropped.push(conceptId);
+    }
+  }
+
+  return {
+    state: {
+      version: value.version,
+      progress,
+      taughtChunkIds: value.taughtChunkIds,
+      completedChunkIds: value.completedChunkIds,
+      completedLectureIds: value.completedLectureIds,
+      injectedByChunk: value.injectedByChunk as LearnerState["injectedByChunk"],
+    },
+    dropped,
+  };
 }
 
 export class LocalStorageLearnerRepository implements LearnerStateRepository {
@@ -28,10 +107,10 @@ export class LocalStorageLearnerRepository implements LearnerStateRepository {
     try {
       const raw = window.localStorage.getItem(this.key);
       if (!raw) return null;
-      const parsed: unknown = JSON.parse(raw);
-      if (!isLearnerState(parsed)) return null;
-      if (parsed.version !== LEARNER_STATE_VERSION) return null;
-      return parsed;
+      const sanitized = sanitizeLearnerState(JSON.parse(raw));
+      if (!sanitized) return null;
+      if (sanitized.state.version !== LEARNER_STATE_VERSION) return null;
+      return sanitized.state;
     } catch {
       // Corrupt or unavailable storage must never break the app.
       return null;

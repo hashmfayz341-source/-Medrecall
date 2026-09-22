@@ -89,16 +89,30 @@ export function conceptsForLecture(
  */
 function approvedChunk(curriculum: Curriculum, chunk: TeachingChunk): TeachingChunk {
   if (!chunk.generated) return chunk;
+
   const concepts = conceptsForChunk(curriculum, chunk);
+  const numbers = [...chunk.pageNumbers].sort((a, b) => a - b);
+  const first = numbers[0];
+  const last = numbers[numbers.length - 1];
+  const range =
+    first === undefined
+      ? ""
+      : first === last
+        ? `Page ${first}`
+        : `Pages ${first}-${last}`;
+
+  // Built from scratch every time. The stored explanation is pre-review prose
+  // assembled while every candidate was DRAFT, so it is never a starting
+  // point — not even for stores written before the `generated` flag existed.
+  const body = concepts.map((c) => `• ${c.summary}`).join("\n");
+
   return {
     ...chunk,
+    // Titles come from approved concepts, or a neutral label. A raw PDF
+    // heading is unreviewed source text and never becomes teaching content.
+    title: concepts.length > 0 ? concepts.map((c) => c.title).join(" · ") : range || "Part",
     conceptIds: concepts.map((c) => c.id),
-    explanation: [
-      chunk.explanation,
-      concepts.map((c) => `• ${c.summary}`).join("\n"),
-    ]
-      .filter((part) => part.length > 0)
-      .join("\n\n"),
+    explanation: [range, body].filter((part) => part.length > 0).join("\n\n"),
   };
 }
 
@@ -445,7 +459,8 @@ export function getNextStep(
               ? [
                   {
                     number: page.number,
-                    title: page.title,
+                    // Neutral label: the stored heading is unreviewed source.
+                    title: `Page ${page.number}`,
                     text: excerpts.map((c) => c.source.excerpt).join("\n\n"),
                   },
                 ]

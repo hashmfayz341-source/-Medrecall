@@ -181,7 +181,12 @@ export function applyOverrides(
       lecture.documents.push(ingested.document);
     }
     for (const chunk of ingested.chunks) {
-      if (!lecture.chunks.some((c) => c.id === chunk.id)) lecture.chunks.push(chunk);
+      // A chunk reached here from an ingested document, so it IS generated —
+      // whatever the stored flag says. Stores written before the flag existed
+      // carry pre-review prose, and trusting their silence would serve it.
+      if (!lecture.chunks.some((c) => c.id === chunk.id)) {
+        lecture.chunks.push({ ...chunk, generated: true });
+      }
     }
   }
 
