@@ -15,6 +15,7 @@ import {
   applyOverrides,
   createOverrides,
   editConcept,
+  hasLegacyDocumentIdentity,
   setConceptStatus,
   setConceptStatuses,
   type ConceptEdit,
@@ -23,8 +24,8 @@ import {
 } from "@/lib/domain/curriculum";
 import { pathologyCurriculum } from "@/lib/content/pathology";
 import { createLearnerState } from "@/lib/engine/tutor";
-import { LocalStorageLearnerRepository } from "@/lib/persistence/localStorage";
-import { LocalStorageCurriculumRepository } from "@/lib/persistence/curriculumStore";
+import { LocalStorageLearnerRepository, STORAGE_KEY } from "@/lib/persistence/localStorage";
+import { LocalStorageCurriculumRepository, CURRICULUM_STORAGE_KEY } from "@/lib/persistence/curriculumStore";
 import type {
   Concept,
   ConceptStatus,
@@ -57,6 +58,8 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
   const [learner, setLearnerState] = useState<LearnerState>(createLearnerState);
   const [overrides, setOverrides] = useState<CurriculumOverrides>(createOverrides);
   const [ready, setReady] = useState(false);
+  const [storageError, setStorageError] = useState(false);
+  const overridesRef = useRef(overrides);
 
   const learnerRepo = useRef(new LocalStorageLearnerRepository());
   const curriculumRepo = useRef(new LocalStorageCurriculumRepository());
@@ -66,23 +69,37 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
     const storedLearner = learnerRepo.current.load();
     if (storedLearner) setLearnerState(storedLearner);
     const storedOverrides = curriculumRepo.current.load();
-    if (storedOverrides) setOverrides(storedOverrides);
+    if (storedOverrides) {
+      overridesRef.current = storedOverrides;
+      setOverrides(storedOverrides);
+    }
     setReady(true);
+    function onStorage(event: StorageEvent) {
+      if (event.key === CURRICULUM_STORAGE_KEY || event.key === null) {
+        const latest = curriculumRepo.current.load() ?? createOverrides();
+        overridesRef.current = latest;
+        setOverrides(latest);
+      }
+      if (event.key === STORAGE_KEY || event.key === null) {
+        setLearnerState(learnerRepo.current.load() ?? createLearnerState());
+      }
+    }
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, []);
 
   const setLearner = useCallback((next: LearnerState) => {
     setLearnerState(next);
-    learnerRepo.current.save(next);
+    if (!learnerRepo.current.save(next)) setStorageError(true);
   }, []);
 
   /** Apply a change to curriculum state and persist it in one step. */
   const mutate = useCallback(
     (fn: (current: CurriculumOverrides) => CurriculumOverrides) => {
-      setOverrides((current) => {
-        const next = fn(current);
-        curriculumRepo.current.save(next);
-        return next;
-      });
+      const next = fn(overridesRef.current);
+      if (!curriculumRepo.current.save(next)) setStorageError(true);
+      overridesRef.current = next;
+      setOverrides(next);
     },
     [],
   );
@@ -121,7 +138,10 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
     learnerRepo.current.clear();
     curriculumRepo.current.clear();
     setLearnerState(fresh);
-    setOverrides(createOverrides());
+    const freshOverrides = createOverrides();
+    overridesRef.current = freshOverrides;
+    setOverrides(freshOverrides);
+    setStorageError(false);
   }, []);
 
   const curriculum = useMemo(
@@ -157,7 +177,21 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <LearnerContext.Provider value={value}>{children}</LearnerContext.Provider>
+    <LearnerContext.Provider value={value}>
+      {storageError && (
+        <div role="alert" data-testid="storage-error" className="sticky top-0 z-50 border-b border-red-300 bg-red-50 p-4 text-red-800">
+          Your latest changes could not be saved. Browser storage is full or unavailable.
+          Keep this tab open: reloading may lose uploaded material, review decisions or progress.
+        </div>
+      )}
+      {ready && curriculum.concepts.some((c) => c.status === "DRAFT" && hasLegacyDocumentIdentity(c.source.documentId)) && (
+        <div role="status" className="border-b border-amber-300 bg-amber-50 p-4 text-amber-900">
+          Earlier PDF uploads need source review because their file identity was unreliable.
+          Re-upload the original PDFs and review or discard the earlier candidates before learning them.
+        </div>
+      )}
+      {children}
+    </LearnerContext.Provider>
   );
 }
 

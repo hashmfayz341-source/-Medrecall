@@ -6,5 +6,5 @@ export default async function LearnPage({
   params: Promise<{ lectureId: string }>;
 }) {
   const { lectureId } = await params;
-  return <LearnSession lectureId={lectureId} />;
+  return <LearnSession key={lectureId} lectureId={lectureId} />;
 }

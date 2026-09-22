@@ -124,7 +124,7 @@ export default function IngestPage() {
     <main className="mx-auto w-full max-w-4xl px-5 py-8 sm:px-8 sm:py-12">
       <Link
         href="/"
-        className="mb-6 inline-block text-sm font-bold uppercase tracking-[0.12em] text-clinical-700"
+        className="mb-6 inline-flex min-h-[44px] items-center text-sm font-bold uppercase tracking-[0.12em] text-clinical-700"
       >
         MedRecall
       </Link>

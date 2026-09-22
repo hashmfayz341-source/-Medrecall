@@ -492,7 +492,7 @@ describe("REQUIREMENT 15: state survives reload", () => {
     );
     const migrated = new LocalStorageCurriculumRepository().load();
     expect(migrated).not.toBeNull();
-    expect(migrated!.version).toBe(2);
+    expect(migrated!.version).toBe(3);
     expect(migrated!.statusById["c-draft-lysosomal"]).toBe("ACTIVE");
     expect(migrated!.ingested).toEqual([]);
     expect(migrated!.concepts).toEqual([]);

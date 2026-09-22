@@ -77,6 +77,39 @@ export function conceptsForLecture(
   return activeOnly(curriculum.concepts.filter((c) => c.lectureId === lectureId));
 }
 
+/**
+ * Generated chunk prose is assembled from candidate sentences while every
+ * candidate is still DRAFT, so serving it raw leaks unapproved text. Rebuild
+ * it from ACTIVE concepts only.
+ *
+ * Authored chunks are human-written teaching material, not a machine
+ * concatenation of candidates, so they are served exactly as written. Their
+ * quality is a Milestone 1 product feature and rewriting them here would
+ * replace real teaching prose with a list of one-line summaries.
+ */
+function approvedChunk(curriculum: Curriculum, chunk: TeachingChunk): TeachingChunk {
+  if (!chunk.generated) return chunk;
+  const concepts = conceptsForChunk(curriculum, chunk);
+  return {
+    ...chunk,
+    conceptIds: concepts.map((c) => c.id),
+    explanation: [
+      chunk.explanation,
+      concepts.map((c) => `• ${c.summary}`).join("\n"),
+    ]
+      .filter((part) => part.length > 0)
+      .join("\n\n"),
+  };
+}
+
+function excludedChunk(curriculum: Curriculum, chunk: TeachingChunk): boolean {
+  // A blank page has no learning work. Explicitly discarded candidates are
+  // excluded too, but a DRAFT (or missing concept) must still wait for review.
+  return chunk.conceptIds.every((id) =>
+    curriculum.concepts.find((c) => c.id === id)?.status === "DISCARDED",
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* Progress helpers                                                    */
 /* ------------------------------------------------------------------ */
@@ -113,7 +146,8 @@ export function isLectureUnlocked(
 ): boolean {
   const lecture = getLecture(curriculum, lectureId);
   const earlier = curriculum.course.lectures.filter((l) => l.order < lecture.order);
-  return earlier.every((l) => learner.completedLectureIds.includes(l.id));
+  const completed = reconcile(curriculum, learner).completedLectureIds;
+  return earlier.every((l) => completed.includes(l.id));
 }
 
 export function assertLectureUnlocked(
@@ -161,27 +195,36 @@ export function reconcile(
   curriculum: Curriculum,
   learner: LearnerState,
 ): LearnerState {
-  const completedChunkIds = new Set(learner.completedChunkIds);
-  const completedLectureIds = new Set(learner.completedLectureIds);
+  const completedChunkIds = new Set<string>();
+  const completedLectureIds = new Set<string>();
+  const taughtChunkIds = new Set(learner.taughtChunkIds);
 
-  // Completion is monotonic: once a chunk has been taught and every concept in
-  // it has been retrieved, it stays done. A concept going WEAK again later
-  // (for example when it is interleaved into a future lecture) must not
-  // re-lock a lecture the learner has already finished.
+  // Weakness does not revoke completion. Newly approved material does: an old
+  // completed chunk id must not silently skip an unattempted ACTIVE concept.
   for (const lecture of curriculum.course.lectures) {
     for (const chunk of lecture.chunks) {
-      if (isChunkComplete(curriculum, learner, chunk)) {
+      const active = conceptsForChunk(curriculum, chunk);
+      const wasComplete = learner.completedChunkIds.includes(chunk.id);
+      const allAttempted = active.length > 0 && active.every(
+        (c) => (learner.progress[c.id]?.totalAttempts ?? 0) > 0,
+      );
+      if (wasComplete && active.some((c) => !learner.progress[c.id]?.totalAttempts)) {
+        taughtChunkIds.delete(chunk.id);
+      }
+      if ((wasComplete && allAttempted) || isChunkComplete(curriculum, learner, chunk)) {
         completedChunkIds.add(chunk.id);
       }
     }
+    const requiredChunks = lecture.chunks.filter((c) => !excludedChunk(curriculum, c));
     const allChunksDone =
-      lecture.chunks.length > 0 &&
-      lecture.chunks.every((c) => completedChunkIds.has(c.id));
+      requiredChunks.length > 0 &&
+      requiredChunks.every((c) => completedChunkIds.has(c.id));
     if (allChunksDone) completedLectureIds.add(lecture.id);
   }
 
   return {
     ...learner,
+    taughtChunkIds: [...taughtChunkIds],
     completedChunkIds: [...completedChunkIds],
     completedLectureIds: [...completedLectureIds],
   };
@@ -201,6 +244,7 @@ export function pickItem(
   context: RetrievalContext,
   progress: ConceptProgress | undefined,
 ): RetrievalItem {
+  assertActive(concept, "retrieval");
   const items = concept.retrievalItems;
   if (items.length === 0) {
     throw new Error(`Concept "${concept.id}" has no retrieval items`);
@@ -320,14 +364,21 @@ export function getNextStep(
   lectureId: string,
   now: Date,
 ): SessionStep {
+  learner = reconcile(curriculum, learner);
   assertLectureUnlocked(curriculum, learner, lectureId);
   const lecture = getLecture(curriculum, lectureId);
 
-  const chunk = [...lecture.chunks]
+  const sourceChunk = [...lecture.chunks]
     .sort((a, b) => a.order - b.order)
-    .find((c) => !learner.completedChunkIds.includes(c.id));
+    .find((c) => !learner.completedChunkIds.includes(c.id) && !excludedChunk(curriculum, c));
 
-  if (!chunk) return { kind: "LECTURE_COMPLETE", lecture };
+  if (!sourceChunk) {
+    if (lecture.chunks.length > 0 && !learner.completedLectureIds.includes(lecture.id)) {
+      return { kind: "AWAITING_APPROVAL", chunk: approvedChunk(curriculum, lecture.chunks[0]!), draftCount: 0 };
+    }
+    return { kind: "LECTURE_COMPLETE", lecture };
+  }
+  const chunk = approvedChunk(curriculum, sourceChunk);
 
   // A wrong answer is re-taught immediately, before anything else happens.
   // This is checked across the whole curriculum, not just the current chunk,
@@ -353,7 +404,7 @@ export function getNextStep(
   // Nothing in this chunk has been approved yet, so there is nothing to teach.
   const approvedHere = conceptsForChunk(curriculum, chunk);
   if (approvedHere.length === 0) {
-    const draftCount = chunk.conceptIds.filter(
+    const draftCount = sourceChunk.conceptIds.filter(
       (id) => curriculum.concepts.find((c) => c.id === id)?.status === "DRAFT",
     ).length;
     return { kind: "AWAITING_APPROVAL", chunk, draftCount };
@@ -382,7 +433,25 @@ export function getNextStep(
     return {
       kind: "TEACH",
       chunk,
-      pages: pagesForChunk(lecture, chunk),
+      // A generated page IS the candidate sentences, so only the excerpts of
+      // ACTIVE concepts may be shown. Authored source pages are part of the
+      // authored lecture and are served in full.
+      pages: chunk.generated
+        ? pagesForChunk(lecture, chunk).flatMap((page) => {
+            const excerpts = approvedHere.filter(
+              (c) => c.source.pageNumber === page.number,
+            );
+            return excerpts.length > 0
+              ? [
+                  {
+                    number: page.number,
+                    title: page.title,
+                    text: excerpts.map((c) => c.source.excerpt).join("\n\n"),
+                  },
+                ]
+              : [];
+          })
+        : pagesForChunk(lecture, chunk),
       concepts: conceptsForChunk(curriculum, chunk),
     };
   }
@@ -414,6 +483,7 @@ export function markChunkTaught(
   learner: LearnerState,
   chunkId: string,
 ): LearnerState {
+  learner = reconcile(curriculum, learner);
   if (learner.taughtChunkIds.includes(chunkId)) return learner;
   return reconcile(curriculum, {
     ...learner,
@@ -505,6 +575,7 @@ export function summarizeLectures(
   curriculum: Curriculum,
   learner: LearnerState,
 ): LectureSummary[] {
+  learner = reconcile(curriculum, learner);
   return [...curriculum.course.lectures]
     .sort((a, b) => a.order - b.order)
     .map((lecture) => {

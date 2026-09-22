@@ -57,7 +57,7 @@ export async function POST(request: Request) {
 
   let document;
   try {
-    document = await extractPdfPages(bytes, file.name);
+    document = await extractPdfPages(bytes, file.name, { courseId, lectureId });
   } catch (cause) {
     console.error("[ingest] PDF extraction failed", cause);
     return NextResponse.json(
@@ -84,6 +84,13 @@ export async function POST(request: Request) {
     lectureId,
     document: { id: document.id, lectureId, title: document.title, pages: document.pages },
   });
+
+  if (concepts.length === 0) {
+    return NextResponse.json(
+      { error: "No candidate concepts could be extracted from this PDF's text. Try a text-based PDF with complete explanatory sentences." },
+      { status: 422 },
+    );
+  }
 
   return NextResponse.json({
     document: {

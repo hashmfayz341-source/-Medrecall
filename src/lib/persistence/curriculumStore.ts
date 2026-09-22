@@ -8,7 +8,7 @@ export const CURRICULUM_STORAGE_KEY = "medrecall.curriculum.v1";
 
 export interface CurriculumOverridesRepository {
   load(): CurriculumOverrides | null;
-  save(value: CurriculumOverrides): void;
+  save(value: CurriculumOverrides): boolean;
   clear(): void;
 }
 
@@ -30,12 +30,13 @@ export class LocalStorageCurriculumRepository
     }
   }
 
-  save(value: CurriculumOverrides): void {
-    if (typeof window === "undefined") return;
+  save(value: CurriculumOverrides): boolean {
+    if (typeof window === "undefined") return false;
     try {
       window.localStorage.setItem(this.key, JSON.stringify(value));
+      return true;
     } catch {
-      // ignore
+      return false;
     }
   }
 
@@ -58,6 +59,7 @@ export class InMemoryCurriculumRepository
   }
   save(value: CurriculumOverrides) {
     this.value = value;
+    return true;
   }
   clear() {
     this.value = null;

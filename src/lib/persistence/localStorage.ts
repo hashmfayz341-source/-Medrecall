@@ -38,12 +38,13 @@ export class LocalStorageLearnerRepository implements LearnerStateRepository {
     }
   }
 
-  save(state: LearnerState): void {
-    if (typeof window === "undefined") return;
+  save(state: LearnerState): boolean {
+    if (typeof window === "undefined") return false;
     try {
       window.localStorage.setItem(this.key, JSON.stringify(state));
+      return true;
     } catch {
-      // Quota or private-mode failures are non-fatal.
+      return false;
     }
   }
 
@@ -65,8 +66,9 @@ export class InMemoryLearnerRepository implements LearnerStateRepository {
     return this.state;
   }
 
-  save(state: LearnerState): void {
+  save(state: LearnerState): boolean {
     this.state = state;
+    return true;
   }
 
   clear(): void {

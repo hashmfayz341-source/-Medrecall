@@ -1,3 +1,5 @@
+import { normalize } from "@/lib/domain/text";
+export { normalize } from "@/lib/domain/text";
 import type { RetrievalItem } from "@/lib/domain/types";
 
 /**
@@ -20,16 +22,6 @@ export interface GradeResult {
   /** The first synonym of each group the learner missed. */
   missing: string[];
   normalizedAnswer: string;
-}
-
-/** Lowercase, strip punctuation, collapse whitespace. */
-export function normalize(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[‘’“”]/g, "'")
-    .replace(/[^a-z0-9+/\s-]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 /** Word-boundary-aware containment, so "atp" does not match "atpase". */

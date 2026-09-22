@@ -101,6 +101,15 @@ export interface TeachingChunk {
   pageNumbers: number[];
   conceptIds: string[];
   explanation: string;
+  /**
+   * True when this chunk was assembled from an ingested document rather than
+   * authored by a human.
+   *
+   * Generated prose and generated pages are made of candidate sentences, so
+   * the tutor must rebuild them from ACTIVE concepts only. Authored chunks are
+   * human-written teaching material and are served as written.
+   */
+  generated?: boolean;
 }
 
 export interface Lecture {

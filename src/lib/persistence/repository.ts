@@ -14,6 +14,6 @@ import type { LearnerState } from "@/lib/domain/types";
  */
 export interface LearnerStateRepository {
   load(): LearnerState | null;
-  save(state: LearnerState): void;
+  save(state: LearnerState): boolean;
   clear(): void;
 }

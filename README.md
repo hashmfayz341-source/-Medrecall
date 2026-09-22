@@ -81,9 +81,9 @@ Verification:
 ```bash
 npm run lint
 npm run typecheck
-npm run test         # 147 unit tests
+npm run test         # 176 unit tests
 npm run build
-npm run e2e          # 28 Playwright tests, iPad + desktop viewports
+npm run e2e          # 42 Playwright tests, iPad + desktop viewports
 ```
 
 `npm run verify` chains lint, typecheck, unit tests and the production build.
