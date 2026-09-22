@@ -229,6 +229,42 @@ export function LearnSession({ lectureId }: { lectureId: string }) {
     );
   }
 
+  if (step.kind === "AWAITING_APPROVAL") {
+    return (
+      <Shell>
+        <Card data-testid="step-awaiting-approval">
+          <h1 className="text-2xl font-bold text-ink-800">
+            Waiting on your review
+          </h1>
+          <p className="prose-teach mt-3 text-ink-600">
+            {step.draftCount > 0 ? (
+              <>
+                This part of the lecture has{" "}
+                <strong data-testid="awaiting-count">{step.draftCount}</strong>{" "}
+                candidate concept{step.draftCount === 1 ? "" : "s"} still in
+                draft. Nothing here can be taught, tested or scheduled until you
+                approve it.
+              </>
+            ) : (
+              <>
+                Every candidate in this part was discarded, so there is nothing
+                approved left to teach here.
+              </>
+            )}
+          </p>
+          <div className="mt-6 flex flex-wrap gap-3">
+            <ButtonLink href="/concepts" data-testid="go-to-review">
+              Review drafts
+            </ButtonLink>
+            <ButtonLink href="/" variant="secondary">
+              Back to dashboard
+            </ButtonLink>
+          </div>
+        </Card>
+      </Shell>
+    );
+  }
+
   if (step.kind === "TEACH") {
     const lecture = curriculum.course.lectures.find((l) => l.id === lectureId)!;
     const pages = pagesForChunk(lecture, step.chunk);

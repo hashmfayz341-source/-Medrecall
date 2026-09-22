@@ -136,6 +136,11 @@ function isChunkComplete(
 ): boolean {
   if (!learner.taughtChunkIds.includes(chunk.id)) return false;
   const concepts = conceptsForChunk(curriculum, chunk);
+  // A chunk whose candidates are all still DRAFT (or discarded) has nothing
+  // approved to learn. Letting it count as complete would let unreviewed
+  // material unlock the next lecture — exactly what the approval gate exists
+  // to prevent.
+  if (concepts.length === 0) return false;
   return concepts.every((concept) => {
     const progress = learner.progress[concept.id];
     return (
@@ -295,6 +300,12 @@ export type SessionStep =
       item: RetrievalItem;
       context: "IMMEDIATE_REMEDIATION";
     }
+  | {
+      kind: "AWAITING_APPROVAL";
+      chunk: TeachingChunk;
+      /** Candidates on this chunk still waiting for a human decision. */
+      draftCount: number;
+    }
   | { kind: "LECTURE_COMPLETE"; lecture: Lecture };
 
 /**
@@ -337,6 +348,15 @@ export function getNextStep(
       ),
       context: "IMMEDIATE_REMEDIATION",
     };
+  }
+
+  // Nothing in this chunk has been approved yet, so there is nothing to teach.
+  const approvedHere = conceptsForChunk(curriculum, chunk);
+  if (approvedHere.length === 0) {
+    const draftCount = chunk.conceptIds.filter(
+      (id) => curriculum.concepts.find((c) => c.id === id)?.status === "DRAFT",
+    ).length;
+    return { kind: "AWAITING_APPROVAL", chunk, draftCount };
   }
 
   // Before teaching new material, surface one weak/due concept from earlier.

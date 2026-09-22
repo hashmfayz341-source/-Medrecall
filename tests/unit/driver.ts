@@ -53,6 +53,12 @@ export function driveLecture(
       continue;
     }
 
+    if (step.kind === "AWAITING_APPROVAL") {
+      // Nothing approved to learn here; the driver cannot make progress.
+      log.push({ kind: step.kind });
+      return { learner: state, log };
+    }
+
     const text = answerFn(step, log);
     const result = recordAttempt(pathologyCurriculum, state, {
       conceptId: step.concept.id,

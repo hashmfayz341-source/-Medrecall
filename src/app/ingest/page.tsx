@@ -220,7 +220,11 @@ export default function IngestPage() {
           </Card>
 
           {status.kind === "done" && (
-            <Card data-testid="ingest-result" className="border-clinical-300">
+            <Card
+              data-testid="ingest-result"
+              data-document-id={status.result.document.id}
+              className="border-clinical-300"
+            >
               <SectionTitle>3 · Review the candidates</SectionTitle>
               <h2 className="mt-2 text-2xl font-bold text-ink-800">
                 {status.result.document.title}

@@ -21,16 +21,31 @@ A complete tutor running with no AI key.
 - [x] 87 unit tests, 16 Playwright tests at iPad and desktop viewports
 - [x] Pathology demo course: Cell Injury → Inflammation
 
-## Milestone 2 — Real content ingestion
+## Milestone 2 — Real content ingestion ✅
 
-- [ ] PDF and slide upload with page-level text extraction
-- [ ] Model-backed `extractConcepts()` behind the existing interface
-- [ ] Concept review queue at volume: bulk approve, edit, merge duplicates
-- [ ] Prerequisite graph inferred from extraction, editable by hand
-- [ ] "View Source" opening the actual page image, not just the excerpt
+- [x] PDF upload with page-by-page text extraction (never flattened)
+- [x] Page order, page numbers and document identity preserved
+- [x] Deterministic candidate extraction behind the AI provider abstraction
+- [x] Every candidate created DRAFT with a complete `SourceRef`
+- [x] Extraction invents nothing: explanation == verbatim source sentence
+- [x] Prerequisites only where the source text literally supports them
+- [x] Review Drafts: edit title/explanation, approve, discard, bulk approve
+- [x] Filtering by document and page; "View Source" with document, page, excerpt
+- [x] Editing never implicitly approves
+- [x] Approved concepts flow into the existing tutor — no parallel system
+- [x] Teaching chunks generated from ingested pages
+- [x] Curriculum state v2 with a Milestone 1 migration
+- [x] `AWAITING_APPROVAL`: unreviewed material cannot complete a chunk or
+      unlock a lecture
+- [x] 147 unit tests, 28 Playwright tests at iPad and desktop viewports
 
-Extraction must keep returning DRAFT concepts with populated `SourceRef`. The
-gate does not move.
+### Not done in Milestone 2
+
+- Merging duplicate candidates across documents
+- Editing the prerequisite graph by hand
+- "View Source" showing the rendered page image (excerpt only for now)
+- OCR for scanned PDFs — rejected with an explicit message instead
+- Creating additional courses (lectures can be created; the course is fixed)
 
 ## Milestone 3 — Model-graded free recall
 

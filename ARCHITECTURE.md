@@ -12,6 +12,7 @@ lib/engine/             Tutor orchestration, priority, FSRS scheduling
         ↓ calls
 lib/domain/             Pure types, approval gate, mastery rules  (no imports out)
 lib/grading/            Deterministic grading (pure)
+lib/ingestion/          PDF text extraction + candidate concept generation
 lib/persistence/        Repository interfaces + implementations
 lib/content/            Authored curriculum data
 lib/ai/                 Provider-agnostic interface + deterministic implementation
@@ -239,3 +240,122 @@ is cleared.
 
 **Future implication.** A server-backed implementation is additive. The version
 field is the migration hook.
+
+
+---
+
+## AD-13 — PDF text is extracted page by page, server-side
+
+**Decision.** `lib/ingestion/pdf.ts` walks a PDF page by page with pdfjs and
+returns one record per page, carrying its number, heading and text. Parsing
+runs in the `/api/ingest` route handler, never in the browser.
+
+**Reason.** Page provenance is the product's safety property (AD-11). A
+flattened text blob makes a page number a guess, which makes "View Source" a
+lie. Running server-side also keeps a megabyte-scale parser out of the client
+bundle and puts extraction where a hosted provider's API key will live.
+
+**Tradeoff.** The PDF is uploaded rather than parsed locally, so ingestion needs
+a round trip and a request-size limit (12MB).
+
+**Future implication.** Swapping in OCR for scanned PDFs, or a layout-aware
+parser, happens behind `extractPdfPages()` without touching extraction or the
+gate. Today a scan with no text layer is rejected with an explicit message
+rather than silently producing nothing.
+
+---
+
+## AD-14 — Extraction selects; it never asserts
+
+**Decision.** A candidate concept's title is a span of its source sentence, its
+explanation **is** that sentence, and its excerpt is the same text again. The
+extractor chooses which sentences are worth surfacing and nothing else.
+
+**Reason.** The one thing a medical tutor must never do is invent a fact and
+present it as sourced. Making "explanation == verbatim source sentence" an
+invariant means the question "did the model make this up?" cannot arise for
+Milestone 2 output, and a test asserts it for every candidate.
+
+**Tradeoff.** Explanations read like the textbook rather than like a tutor, and
+a sentence with no clear subject/verb boundary is skipped instead of guessed at.
+
+**Future implication.** When a model-backed provider generates real
+explanations, this invariant becomes the thing to defend: generated prose must
+still cite, and stay consistent with, the stored excerpt.
+
+---
+
+## AD-15 — Prerequisites only from literal textual evidence
+
+**Decision.** A candidate links to an earlier candidate only when that earlier
+concept's title appears verbatim in the later concept's source sentence.
+
+**Reason.** A prerequisite graph drives teaching order and priority. Inferring
+"ATP depletion precedes cellular swelling" from subject knowledge would be the
+extractor asserting medicine. Textual containment is evidence the document
+itself supplies.
+
+**Tradeoff.** The graph is sparse and misses real dependencies expressed in
+different words.
+
+**Future implication.** A model-backed extractor can propose richer links, but
+they should arrive as reviewable suggestions, not as silent edges.
+
+---
+
+## AD-16 — Curriculum state v2: edits are separate from approval
+
+**Decision.** Shared curriculum state now carries ingested documents, generated
+chunks, candidate concepts, a `statusById` map and a separate `edits` map.
+`migrateOverrides()` upgrades a Milestone 1 store in place.
+
+**Reason.** Editing and approving are different decisions by different
+intentions. Correcting a draft's wording must not make it teachable — a
+reviewer fixing a typo has not endorsed the concept. Keeping the maps separate
+makes that structural rather than a UI convention.
+
+**Tradeoff.** Two maps to keep coherent, and the live curriculum is composed on
+every read rather than stored flat.
+
+**Future implication.** Edit history, per-reviewer attribution and approval
+workflows all hang off `edits` without disturbing `statusById`.
+
+---
+
+## AD-17 — A chunk with nothing approved can never be complete
+
+**Decision.** `isChunkComplete()` returns false when a chunk has no ACTIVE
+concepts, and `getNextStep()` returns an `AWAITING_APPROVAL` step instead of
+teaching one.
+
+**Reason.** Found while writing the Milestone 2 gate tests. Chunk completion
+was "every ACTIVE concept has been attempted", and `[].every(...)` is true — so
+a chunk whose candidates were all still DRAFT completed the moment it was read,
+and could unlock the next lecture. Unreviewed material would have satisfied
+lecture unlock logic, which the approval gate exists to prevent.
+
+**Tradeoff.** A lecture whose candidates are all discarded can never complete,
+so its chunk sits in `AWAITING_APPROVAL`. That is the honest state: there is
+nothing approved to learn.
+
+**Future implication.** Any future notion of completion must ask "approved and
+retrieved", never "seen".
+
+---
+
+## AD-18 — pdfjs stays out of the server bundle
+
+**Decision.** `serverExternalPackages: ["pdfjs-dist"]` in `next.config.ts`.
+
+**Reason.** pdfjs resolves its worker through a runtime dynamic import. Bundled,
+that path is rewritten and every upload fails with "Setting up fake worker
+failed" — which unit tests running under plain Node never reproduce. Marking it
+external leaves the import resolving from `node_modules`, matching test
+behaviour.
+
+**Tradeoff.** The package is traced rather than bundled, so it must be present
+in the deployment's `node_modules`.
+
+**Future implication.** Any parser with a runtime-resolved worker needs the same
+treatment. It is also why the E2E suite runs against a production build: this
+failure mode is invisible in unit tests.
