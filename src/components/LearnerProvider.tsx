@@ -71,8 +71,13 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
     (incoming: LearnerState, overridesForCheck: CurriculumOverrides | null) => {
       const result = acceptIncomingLearnerState(incoming, overridesForCheck);
       setLearnerState(result.learner);
-      if (result.quarantinedConceptIds.length > 0) {
+      // Persist whenever anything was removed, not only concept progress:
+      // legacy chunk, lecture and interleaving state can exist on its own, and
+      // cleaning it only in memory lets it return on the next reload.
+      if (result.changed) {
         learnerRepo.current.save(result.learner);
+      }
+      if (result.quarantinedConceptIds.length > 0) {
         setQuarantined((current) =>
           Math.max(current, result.quarantinedConceptIds.length),
         );

@@ -214,3 +214,78 @@ test("normal multi-tab sync still works for authored material", async ({ page })
   await page.getByTestId("filter-ACTIVE").click();
   await expect(page.getByTestId("concept-c-draft-lysosomal")).toBeVisible();
 });
+
+/** Legacy bookkeeping with NO progress record — the case that was not persisted. */
+function legacyStateWithoutProgress() {
+  return {
+    version: 1,
+    progress: {},
+    taughtChunkIds: [`${LEGACY_DOC}-chunk-1`],
+    completedChunkIds: [`${LEGACY_DOC}-chunk-1`],
+    completedLectureIds: [LEGACY_LECTURE],
+    injectedByChunk: { [`${LEGACY_DOC}-chunk-1`]: [LEGACY_CONCEPT] },
+  };
+}
+
+test("legacy chunk/lecture state with no progress is cleaned AND persisted", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.evaluate(
+    ([curriculumKey, learnerKey, curriculum, learner]) => {
+      window.localStorage.clear();
+      window.localStorage.setItem(curriculumKey as string, curriculum as string);
+      window.localStorage.setItem(learnerKey as string, learner as string);
+    },
+    [
+      CURRICULUM_KEY,
+      LEARNER_KEY,
+      JSON.stringify(legacyCurriculum()),
+      JSON.stringify(legacyStateWithoutProgress()),
+    ],
+  );
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Pathology" })).toBeVisible();
+
+  // Cleaned in storage, not merely in memory.
+  const after = await storedLearner(page);
+  expect(after.taughtChunkIds).not.toContain(`${LEGACY_DOC}-chunk-1`);
+  expect(after.completedChunkIds).not.toContain(`${LEGACY_DOC}-chunk-1`);
+  expect(after.completedLectureIds).not.toContain(LEGACY_LECTURE);
+  expect(after.injectedByChunk[`${LEGACY_DOC}-chunk-1`]).toBeUndefined();
+
+  // A second reload reads the already-clean state and leaves it alone.
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Pathology" })).toBeVisible();
+  expect(await storedLearner(page)).toEqual(after);
+});
+
+test("an older curriculum payload is rewritten as the current version", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.evaluate(
+    ([curriculumKey, learnerKey, curriculum]) => {
+      window.localStorage.clear();
+      // A v2 payload carrying an edit and an approval on a colliding identity.
+      const payload = JSON.parse(curriculum as string);
+      payload.edits = { "legacy-c0": { title: "EDIT FROM PDF A" } };
+      window.localStorage.setItem(curriculumKey as string, JSON.stringify(payload));
+      window.localStorage.removeItem(learnerKey as string);
+    },
+    [CURRICULUM_KEY, LEARNER_KEY, JSON.stringify(legacyCurriculum())],
+  );
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Pathology" })).toBeVisible();
+
+  const raw = await page.evaluate(
+    (key) => window.localStorage.getItem(key),
+    CURRICULUM_KEY,
+  );
+  expect(raw).not.toBeNull();
+  const onDisk = JSON.parse(raw!);
+  expect(onDisk.version).toBe(4);
+  expect(onDisk.statusById[LEGACY_CONCEPT]).toBe("DRAFT");
+  expect(onDisk.edits[LEGACY_CONCEPT]).toBeUndefined();
+  expect(raw).not.toContain("EDIT FROM PDF A");
+});

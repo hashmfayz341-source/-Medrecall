@@ -1,4 +1,5 @@
 import {
+  CURRICULUM_OVERRIDES_VERSION,
   createOverrides,
   migrateOverrides,
   type CurriculumOverrides,
@@ -22,9 +23,27 @@ export class LocalStorageCurriculumRepository
     try {
       const raw = window.localStorage.getItem(this.key);
       if (!raw) return null;
+
+      const stored: unknown = JSON.parse(raw);
       // migrateOverrides validates the shape and upgrades older versions,
       // so a Milestone 1 store keeps its approval decisions.
-      return migrateOverrides(JSON.parse(raw));
+      const migrated = migrateOverrides(stored);
+      if (!migrated) return null;
+
+      // An older payload may still hold decisions the migration strips as
+      // unsafe. Write the cleaned version back so the unsafe one does not
+      // remain on disk for another tab or a later reader to pick up.
+      const storedVersion =
+        typeof stored === "object" && stored !== null
+          ? (stored as { version?: unknown }).version
+          : undefined;
+      if (storedVersion !== CURRICULUM_OVERRIDES_VERSION) {
+        // Best effort: if the write fails the returned value is still the
+        // safe, migrated one.
+        this.save(migrated);
+      }
+
+      return migrated;
     } catch {
       return null;
     }
