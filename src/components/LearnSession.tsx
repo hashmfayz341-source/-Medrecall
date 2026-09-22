@@ -8,7 +8,6 @@ import {
   getNextStep,
   isLectureUnlocked,
   markChunkTaught,
-  pagesForChunk,
   recordAttempt,
   type SessionStep,
 } from "@/lib/engine/tutor";
@@ -33,7 +32,8 @@ export function LearnSession({ lectureId }: { lectureId: string }) {
   const [answer, setAnswer] = useState("");
   const [feedback, setFeedback] = useState<Feedback | null>(null);
 
-  const unlocked = ready && isLectureUnlocked(curriculum, learner, lectureId);
+  const exists = curriculum.course.lectures.some((lecture) => lecture.id === lectureId);
+  const unlocked = ready && exists && isLectureUnlocked(curriculum, learner, lectureId);
 
   const step = useMemo<SessionStep | null>(() => {
     if (!ready || !unlocked) return null;
@@ -54,10 +54,9 @@ export function LearnSession({ lectureId }: { lectureId: string }) {
     return (
       <Shell>
         <Card>
-          <h1 className="text-2xl font-bold text-ink-800">Lecture locked</h1>
+          <h1 className="text-2xl font-bold text-ink-800">{exists ? "Lecture locked" : "Lecture not found"}</h1>
           <p className="prose-teach mt-3 text-ink-600">
-            Finish the previous lecture before starting this one. MedRecall
-            unlocks material in order so prerequisites are in place first.
+            {exists ? "Finish the previous lecture before starting this one. MedRecall unlocks material in order so prerequisites are in place first." : "This lecture is not available in this browser. Return to the dashboard to choose a lecture."}
           </p>
           <div className="mt-6">
             <ButtonLink href="/" variant="secondary">
@@ -128,7 +127,7 @@ export function LearnSession({ lectureId }: { lectureId: string }) {
   }
 
   /* ---------------- Feedback view ---------------- */
-  if (feedback) {
+  if (feedback && curriculum.concepts.some((c) => c.id === feedback.concept.id && c.status === "ACTIVE" && c.summary === feedback.concept.summary && c.title === feedback.concept.title)) {
     const { grade, concept, item, stillWeak } = feedback;
     const doc = curriculum.course.lectures
       .flatMap((l) => l.documents)
@@ -267,7 +266,7 @@ export function LearnSession({ lectureId }: { lectureId: string }) {
 
   if (step.kind === "TEACH") {
     const lecture = curriculum.course.lectures.find((l) => l.id === lectureId)!;
-    const pages = pagesForChunk(lecture, step.chunk);
+    const pages = step.pages;
     const doc = lecture.documents.find((d) => d.id === step.chunk.documentId);
     return (
       <Shell>
@@ -279,11 +278,11 @@ export function LearnSession({ lectureId }: { lectureId: string }) {
             {step.chunk.title}
           </h1>
 
-          <p className="prose-teach mt-5 text-ink-700">{step.chunk.explanation}</p>
+          <p className="prose-teach mt-5 whitespace-pre-line text-ink-700">{step.chunk.explanation}</p>
 
           <div className="mt-7 space-y-4">
             <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-500">
-              From the source · {doc?.title}
+              Approved source excerpts · {doc?.title}
             </h2>
             {pages.map((page) => (
               <article
@@ -417,7 +416,10 @@ export function LearnSession({ lectureId }: { lectureId: string }) {
           >
             Submit answer
           </Button>
-          <Link href="/" className="text-sm font-semibold text-ink-500 underline">
+          <Link
+            href="/"
+            className="inline-flex min-h-[44px] items-center text-sm font-semibold text-ink-500 underline"
+          >
             Save and exit
           </Link>
         </div>
@@ -431,7 +433,7 @@ function Shell({ children }: { children: React.ReactNode }) {
     <main className="mx-auto w-full max-w-3xl px-5 py-8 sm:px-8 sm:py-12">
       <Link
         href="/"
-        className="mb-6 inline-block text-sm font-bold uppercase tracking-[0.12em] text-clinical-700"
+        className="mb-6 inline-flex min-h-[44px] items-center text-sm font-bold uppercase tracking-[0.12em] text-clinical-700"
       >
         MedRecall
       </Link>

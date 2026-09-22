@@ -7,6 +7,7 @@ import {
   toSourceDocument,
 } from "@/lib/ingestion/extractor";
 import {
+  CURRICULUM_OVERRIDES_VERSION,
   addIngestedDocument,
   applyOverrides,
   createOverrides,
@@ -492,7 +493,7 @@ describe("REQUIREMENT 15: state survives reload", () => {
     );
     const migrated = new LocalStorageCurriculumRepository().load();
     expect(migrated).not.toBeNull();
-    expect(migrated!.version).toBe(2);
+    expect(migrated!.version).toBe(CURRICULUM_OVERRIDES_VERSION);
     expect(migrated!.statusById["c-draft-lysosomal"]).toBe("ACTIVE");
     expect(migrated!.ingested).toEqual([]);
     expect(migrated!.concepts).toEqual([]);

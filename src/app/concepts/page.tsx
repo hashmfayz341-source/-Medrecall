@@ -37,7 +37,7 @@ function ConceptReview() {
   const documents = useMemo(() => {
     const map = new Map<string, string>();
     for (const lecture of curriculum.course.lectures) {
-      for (const doc of lecture.documents) map.set(doc.id, doc.title);
+      for (const doc of lecture.documents) map.set(doc.id, `${lecture.title} · ${doc.title}`);
     }
     return map;
   }, [curriculum]);
@@ -75,7 +75,8 @@ function ConceptReview() {
 
   function setDraft(conceptId: string, patch: Partial<{ title: string; summary: string }>) {
     setEditing((current) => {
-      const base = current[conceptId] ?? { title: "", summary: "" };
+      const concept = curriculum.concepts.find((c) => c.id === conceptId)!;
+      const base = current[conceptId] ?? { title: concept.title, summary: concept.summary };
       return { ...current, [conceptId]: { ...base, ...patch } };
     });
   }
@@ -95,7 +96,7 @@ function ConceptReview() {
     <main className="mx-auto w-full max-w-4xl px-5 py-8 sm:px-8 sm:py-12">
       <Link
         href="/"
-        className="mb-6 inline-block text-sm font-bold uppercase tracking-[0.12em] text-clinical-700"
+        className="mb-6 inline-flex min-h-[44px] items-center text-sm font-bold uppercase tracking-[0.12em] text-clinical-700"
       >
         MedRecall
       </Link>
@@ -121,7 +122,7 @@ function ConceptReview() {
           <button
             key={key}
             data-testid={`filter-${key}`}
-            onClick={() => setStatusFilter(key)}
+            onClick={() => { setStatusFilter(key); setPageFilter(""); }}
             className={`min-h-[3rem] rounded-xl border px-5 text-sm font-semibold ${
               statusFilter === key
                 ? "border-clinical-600 bg-clinical-600 text-white"
@@ -137,12 +138,13 @@ function ConceptReview() {
         <div className="mt-4 flex flex-wrap gap-3">
           <select
             data-testid="document-filter"
+            aria-label="Filter by document and lecture"
             value={documentFilter}
             onChange={(e) => {
               setDocumentFilter(e.target.value);
               setPageFilter("");
             }}
-            className="min-h-[3rem] rounded-xl border border-ink-300 bg-white px-4 text-sm text-ink-700"
+            className="min-h-[3rem] max-w-full rounded-xl border border-ink-300 bg-white px-4 text-sm text-ink-700"
           >
             <option value="">All documents</option>
             {[...documents.entries()].map(([id, title]) => (
@@ -154,6 +156,7 @@ function ConceptReview() {
 
           <select
             data-testid="page-filter"
+            aria-label="Filter by source page"
             value={pageFilter}
             onChange={(e) => setPageFilter(e.target.value)}
             className="min-h-[3rem] rounded-xl border border-ink-300 bg-white px-4 text-sm text-ink-700"
@@ -173,6 +176,7 @@ function ConceptReview() {
           <Button
             variant="secondary"
             data-testid="bulk-approve"
+            disabled={!ready || shown.some((c) => editing[c.id] !== undefined)}
             onClick={() => updateConceptStatuses(shown.map((c) => c.id), "ACTIVE")}
           >
             Approve all {shown.length} shown
@@ -250,9 +254,13 @@ function ConceptReview() {
 
                 <div className="mt-6 flex flex-wrap gap-3">
                   {isEditing && (
+                    <p className="w-full text-sm text-ink-600" role="status">Save your edit before approving.</p>
+                  )}
+                  {isEditing && (
                     <Button
                       variant="secondary"
                       data-testid={`save-${concept.id}`}
+                      disabled={!draft.title.trim() || !draft.summary.trim()}
                       onClick={() => saveEdit(concept)}
                     >
                       Save edit
@@ -261,6 +269,7 @@ function ConceptReview() {
                   {concept.status !== "ACTIVE" && (
                     <Button
                       data-testid={`approve-${concept.id}`}
+                      disabled={isEditing}
                       onClick={() => updateConceptStatus(concept.id, "ACTIVE")}
                     >
                       Approve

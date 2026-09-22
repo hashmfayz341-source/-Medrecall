@@ -1,8 +1,10 @@
+import { normalize } from "@/lib/domain/text";
+import { buildRetrievalItems } from "@/lib/domain/retrieval";
+export { buildRetrievalItems } from "@/lib/domain/retrieval";
 import type {
   Concept,
   ConceptImportance,
   Page,
-  RetrievalItem,
   SourceDocument,
   TeachingChunk,
 } from "@/lib/domain/types";
@@ -23,15 +25,6 @@ import type { ExtractedDocument } from "./pdf";
 const AUXILIARIES = new Set([
   "is", "are", "was", "were", "has", "have", "can", "may", "must", "will",
   "becomes", "become", "remains", "represents",
-]);
-
-const STOPWORDS = new Set([
-  "the", "and", "that", "this", "these", "those", "with", "from", "into",
-  "within", "which", "when", "than", "then", "their", "there", "they", "them",
-  "its", "for", "are", "was", "were", "has", "have", "had", "been", "being",
-  "most", "more", "much", "many", "some", "such", "also", "very", "other",
-  "because", "about", "after", "before", "between", "during", "through",
-  "while", "would", "could", "should", "over", "under", "both", "each",
 ]);
 
 /** Sentence-level markers that make a statement worth surfacing as CORE. */
@@ -96,67 +89,6 @@ export function titleFromSubject(subject: string): string | null {
   return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 }
 
-function normalize(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9+/\s-]/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function contentKeywords(text: string, limit: number): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of words(normalize(text))) {
-    if (raw.length < 4 || STOPWORDS.has(raw) || seen.has(raw)) continue;
-    seen.add(raw);
-    out.push(raw);
-    if (out.length >= limit) break;
-  }
-  return out;
-}
-
-/**
- * Build retrieval items for a candidate. Two forms, so the tutor's remediation
- * step can ask a different question from the one just failed.
- */
-export function buildRetrievalItems(
-  conceptId: string,
-  title: string,
-  subject: string,
-  predicate: string,
-  sentence: string,
-  documentTitle: string,
-  pageNumber: number,
-): RetrievalItem[] {
-  const titleTerm = normalize(title);
-  const subjectTerm = normalize(subject);
-
-  const clozePrompt = sentence.replace(subject, "___");
-  const keywords = contentKeywords(predicate, 2);
-
-  const cloze: RetrievalItem = {
-    id: `${conceptId}-r1`,
-    conceptId,
-    kind: "CLOZE",
-    prompt: clozePrompt === sentence ? `Fill the gap: ___ ${predicate}` : clozePrompt,
-    requiredKeywords: [[titleTerm, subjectTerm].filter((t, i, a) => t && a.indexOf(t) === i)],
-    acceptableAnswers: [title, subject],
-    explanation: sentence,
-  };
-
-  const recall: RetrievalItem = {
-    id: `${conceptId}-r2`,
-    conceptId,
-    kind: "BASIC",
-    prompt: `What does ${documentTitle} (page ${pageNumber}) state about ${title}?`,
-    requiredKeywords:
-      keywords.length > 0
-        ? keywords.map((k) => [k])
-        : [[titleTerm]],
-    acceptableAnswers: [],
-    explanation: sentence,
-  };
-
-  return [cloze, recall];
-}
-
 export interface CandidateOptions {
   courseId: string;
   lectureId: string;
@@ -179,7 +111,10 @@ export function generateCandidates(
   for (const page of doc.pages) {
     let onThisPage = 0;
 
-    for (const sentence of splitSentences(page.text)) {
+    const text = page.text.startsWith(`${page.title}\n`)
+      ? page.text.slice(page.title.length + 1)
+      : page.text;
+    for (const sentence of splitSentences(text)) {
       if (onThisPage >= MAX_CANDIDATES_PER_PAGE) break;
 
       const split = splitSubjectPredicate(sentence);
@@ -270,7 +205,6 @@ export function buildChunks(
   const groups = chunkPageNumbers(doc.pages.map((p) => p.number));
 
   return groups.map((pageNumbers, index) => {
-    const pages = doc.pages.filter((p) => pageNumbers.includes(p.number));
     const chunkConcepts = concepts.filter((c) =>
       pageNumbers.includes(c.source.pageNumber),
     );
@@ -278,20 +212,22 @@ export function buildChunks(
     const last = pageNumbers[pageNumbers.length - 1]!;
     const range = first === last ? `page ${first}` : `pages ${first}-${last}`;
 
-    const headings = pages.map((p) => p.title).join(" · ");
-    const body = chunkConcepts.map((c) => `• ${c.summary}`).join("\n");
-
+    // Deliberately provenance only. Embedding the candidate sentences here is
+    // how unapproved text reached teaching in Milestone 2: the chunk is built
+    // while every candidate is still DRAFT. The tutor composes the body from
+    // ACTIVE concepts at serve time instead.
     return {
       id: `${doc.id}-chunk-${index + 1}`,
       lectureId,
       order: orderOffset + index + 1,
-      title: pages[0]?.title ?? `Part ${index + 1}`,
+      // Neutral label. A raw PDF heading is unreviewed source text and must
+      // not become teaching content; it stays on the page record for review.
+      title: `Part ${index + 1}`,
       documentId: doc.id,
       pageNumbers,
       conceptIds: chunkConcepts.map((c) => c.id),
-      explanation:
-        `From ${doc.title}, ${range}${headings ? ` (${headings})` : ""}.\n\n` +
-        `The following statements are taken directly from the source:\n${body}`,
+      generated: true,
+      explanation: `From ${doc.title}, ${range}.`,
     };
   });
 }

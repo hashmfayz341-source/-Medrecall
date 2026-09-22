@@ -1,5 +1,6 @@
 import { gradeAnswer, type GradeResult } from "@/lib/grading";
 import { generateCandidates } from "@/lib/ingestion/extractor";
+import { assertActive, assertAllActive } from "@/lib/domain/gate";
 import type { Concept, RetrievalItem } from "@/lib/domain/types";
 import type {
   AiProvider,
@@ -38,10 +39,12 @@ export class DeterministicProvider implements AiProvider {
   }
 
   async generateTeachingExplanation(input: TeachingInput): Promise<string> {
-    return input.chunk.explanation;
+    assertAllActive(input.concepts, "teaching");
+    return input.concepts.map((concept) => concept.summary).join("\n\n");
   }
 
   async generateRetrievalItems(concept: Concept): Promise<RetrievalItem[]> {
+    assertActive(concept, "retrieval");
     return concept.retrievalItems;
   }
 
@@ -54,6 +57,7 @@ export class DeterministicProvider implements AiProvider {
 
   async generateRemediation(input: RemediationInput): Promise<string> {
     const { concept, item, grade } = input;
+    assertActive(concept, "teaching");
     const missing = grade.missing.filter(Boolean);
     const gap =
       missing.length > 0

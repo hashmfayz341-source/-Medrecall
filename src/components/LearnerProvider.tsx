@@ -15,6 +15,7 @@ import {
   applyOverrides,
   createOverrides,
   editConcept,
+  hasLegacyDocumentIdentity,
   setConceptStatus,
   setConceptStatuses,
   type ConceptEdit,
@@ -23,8 +24,9 @@ import {
 } from "@/lib/domain/curriculum";
 import { pathologyCurriculum } from "@/lib/content/pathology";
 import { createLearnerState } from "@/lib/engine/tutor";
-import { LocalStorageLearnerRepository } from "@/lib/persistence/localStorage";
-import { LocalStorageCurriculumRepository } from "@/lib/persistence/curriculumStore";
+import { LocalStorageLearnerRepository, STORAGE_KEY } from "@/lib/persistence/localStorage";
+import { acceptIncomingLearnerState } from "@/lib/domain/quarantine";
+import { LocalStorageCurriculumRepository, CURRICULUM_STORAGE_KEY } from "@/lib/persistence/curriculumStore";
 import type {
   Concept,
   ConceptStatus,
@@ -57,32 +59,106 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
   const [learner, setLearnerState] = useState<LearnerState>(createLearnerState);
   const [overrides, setOverrides] = useState<CurriculumOverrides>(createOverrides);
   const [ready, setReady] = useState(false);
+  const [storageError, setStorageError] = useState(false);
+  const [quarantined, setQuarantined] = useState(0);
+  const overridesRef = useRef(overrides);
+  // The storage handler is registered once, so it reads the current learner
+  // state through a ref rather than a stale closure.
+  const learnerRef = useRef(learner);
+  useEffect(() => {
+    learnerRef.current = learner;
+  }, [learner]);
 
   const learnerRepo = useRef(new LocalStorageLearnerRepository());
   const curriculumRepo = useRef(new LocalStorageCurriculumRepository());
 
+  /** Filter incoming learner state, persist and report any quarantine. */
+  const acceptLearnerState = useCallback(
+    (incoming: LearnerState, overridesForCheck: CurriculumOverrides | null) => {
+      const result = acceptIncomingLearnerState(incoming, overridesForCheck);
+      setLearnerState(result.learner);
+      // Persist whenever anything was removed, not only concept progress:
+      // legacy chunk, lecture and interleaving state can exist on its own, and
+      // cleaning it only in memory lets it return on the next reload.
+      if (result.changed) {
+        learnerRepo.current.save(result.learner);
+      }
+      if (result.quarantinedConceptIds.length > 0) {
+        setQuarantined((current) =>
+          Math.max(current, result.quarantinedConceptIds.length),
+        );
+      }
+      return result;
+    },
+    [],
+  );
+
   // Hydrate from storage after mount so server and client markup agree.
   useEffect(() => {
     const storedLearner = learnerRepo.current.load();
-    if (storedLearner) setLearnerState(storedLearner);
     const storedOverrides = curriculumRepo.current.load();
-    if (storedOverrides) setOverrides(storedOverrides);
+
+    if (storedOverrides) {
+      overridesRef.current = storedOverrides;
+      setOverrides(storedOverrides);
+    }
+
+    if (storedLearner) {
+      // Progress recorded against a colliding legacy document identity may
+      // belong to a different PDF entirely, so it is discarded once rather
+      // than silently carried into re-approved material.
+      acceptLearnerState(storedLearner, storedOverrides);
+    }
+
     setReady(true);
-  }, []);
+    function onStorage(event: StorageEvent) {
+      const curriculumChanged =
+        event.key === CURRICULUM_STORAGE_KEY || event.key === null;
+      const learnerChanged = event.key === STORAGE_KEY || event.key === null;
+      if (!curriculumChanged && !learnerChanged) return;
+
+      // Always refresh curriculum first: the quarantine decision depends on
+      // which document identities are currently known to be untrusted.
+      const latestOverrides = curriculumRepo.current.load();
+      if (latestOverrides) overridesRef.current = latestOverrides;
+
+      if (curriculumChanged) {
+        const latest = latestOverrides ?? createOverrides();
+        overridesRef.current = latest;
+        setOverrides(latest);
+      }
+
+      // Re-check learner state on EITHER event, not just a learner one.
+      //
+      // A curriculum event can be what first reveals a document identity as
+      // untrusted. Waiting for a separate learner event (or a reload) would
+      // leave legacy mastery, completion and interleaving state live in this
+      // tab in the meantime. Running it on both events also makes the two
+      // possible orderings converge on the same safe result.
+      //
+      // acceptLearnerState only writes when something was actually removed,
+      // so repeating this is idempotent and cannot loop.
+      acceptLearnerState(
+        learnerRepo.current.load() ?? learnerRef.current,
+        overridesRef.current,
+      );
+    }
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [acceptLearnerState]);
 
   const setLearner = useCallback((next: LearnerState) => {
     setLearnerState(next);
-    learnerRepo.current.save(next);
+    if (!learnerRepo.current.save(next)) setStorageError(true);
   }, []);
 
   /** Apply a change to curriculum state and persist it in one step. */
   const mutate = useCallback(
     (fn: (current: CurriculumOverrides) => CurriculumOverrides) => {
-      setOverrides((current) => {
-        const next = fn(current);
-        curriculumRepo.current.save(next);
-        return next;
-      });
+      const next = fn(overridesRef.current);
+      if (!curriculumRepo.current.save(next)) setStorageError(true);
+      overridesRef.current = next;
+      setOverrides(next);
     },
     [],
   );
@@ -121,7 +197,10 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
     learnerRepo.current.clear();
     curriculumRepo.current.clear();
     setLearnerState(fresh);
-    setOverrides(createOverrides());
+    const freshOverrides = createOverrides();
+    overridesRef.current = freshOverrides;
+    setOverrides(freshOverrides);
+    setStorageError(false);
   }, []);
 
   const curriculum = useMemo(
@@ -157,7 +236,27 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <LearnerContext.Provider value={value}>{children}</LearnerContext.Provider>
+    <LearnerContext.Provider value={value}>
+      {storageError && (
+        <div role="alert" data-testid="storage-error" className="sticky top-0 z-50 border-b border-red-300 bg-red-50 p-4 text-red-800">
+          Your latest changes could not be saved. Browser storage is full or unavailable.
+          Keep this tab open: reloading may lose uploaded material, review decisions or progress.
+        </div>
+      )}
+      {ready && curriculum.concepts.some((c) => c.status === "DRAFT" && hasLegacyDocumentIdentity(c.source.documentId)) && (
+        <div role="status" className="border-b border-amber-300 bg-amber-50 p-4 text-amber-900">
+          Earlier PDF uploads need source review because their file identity was unreliable.
+          Re-upload the original PDFs and review or discard the earlier candidates before learning them.
+          {quarantined > 0 && (
+            <span data-testid="quarantine-note">
+              {" "}Progress recorded against {quarantined} of those candidates has been
+              cleared, because it may have belonged to a different document.
+            </span>
+          )}
+        </div>
+      )}
+      {children}
+    </LearnerContext.Provider>
   );
 }
 

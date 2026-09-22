@@ -1,4 +1,5 @@
 import type { Page } from "@/lib/domain/types";
+import { createHash } from "node:crypto";
 
 /**
  * Page-by-page PDF text extraction.
@@ -20,14 +21,9 @@ export interface ExtractedDocument {
   pages: Page[];
 }
 
-/** FNV-1a — short, stable, dependency-free. Not used for security. */
+/** Content identity must not collide and inherit an unrelated approval. */
 export function contentHash(bytes: Uint8Array): string {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < bytes.length; i++) {
-    hash ^= bytes[i]!;
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(16).padStart(8, "0");
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 export function slugify(value: string): string {
@@ -40,8 +36,16 @@ export function slugify(value: string): string {
 }
 
 /** A document id that is stable for the same file uploaded twice. */
-export function documentIdFor(fileName: string, bytes: Uint8Array): string {
-  return `doc-${slugify(fileName)}-${contentHash(bytes)}`;
+export function documentIdFor(
+  fileName: string,
+  bytes: Uint8Array,
+  scope?: { courseId: string; lectureId: string },
+): string {
+  const identity = createHash("sha256")
+    .update(JSON.stringify([fileName, scope?.courseId ?? "", scope?.lectureId ?? ""]))
+    .update(bytes)
+    .digest("hex");
+  return `doc-${slugify(fileName)}-${identity}`;
 }
 
 /** Turn a file name into a readable document title. */
@@ -84,7 +88,9 @@ export function splitHeading(
     first !== undefined &&
     first.length > 0 &&
     first.length <= 90 &&
-    !/[.!?]$/.test(first);
+    rest.length > 0 &&
+    !/[.!?]$/.test(first) &&
+    !/\b(is|are|was|were|has|have|causes|leads|consumes|requires)\b/i.test(first);
 
   if (looksLikeHeading) {
     return { title: first, body: rest.join(" ").trim() };
@@ -100,7 +106,11 @@ export function splitHeading(
 export async function extractPdfPages(
   data: Uint8Array,
   fileName: string,
+  scope?: { courseId: string; lectureId: string },
 ): Promise<ExtractedDocument> {
+  // pdfjs transfers/detaches data.buffer, including with its Node fake worker.
+  // Compute identity while the uploaded bytes still exist.
+  const id = documentIdFor(fileName, data, scope);
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
 
   const task = pdfjs.getDocument({
@@ -111,20 +121,22 @@ export async function extractPdfPages(
     disableFontFace: true,
   });
 
-  const doc = await task.promise;
   try {
+    const doc = await task.promise;
     const pages: Page[] = [];
     // 1-indexed, ascending: page order is part of the contract.
     for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
       const page = await doc.getPage(pageNumber);
       const content = await page.getTextContent();
       const lines = linesFromItems(content.items as TextItemLike[]);
-      const { title, body } = splitHeading(lines, pageNumber);
-      pages.push({ number: pageNumber, title, text: body });
+      const { title } = splitHeading(lines, pageNumber);
+      // Keep the heading too: extraction must never delete source text.
+      pages.push({ number: pageNumber, title, text: lines.join("\n") });
+      page.cleanup();
     }
 
     return {
-      id: documentIdFor(fileName, data),
+      id,
       title: titleFromFileName(fileName),
       pageCount: doc.numPages,
       pages,

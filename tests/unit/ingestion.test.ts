@@ -267,12 +267,18 @@ describe("teaching chunks built from an ingested document", () => {
     expect(chunks.map((c) => c.order)).toEqual([3, 4]);
   });
 
-  it("builds explanations only from source sentences", () => {
+  it("stores provenance only — never the candidate sentences themselves", () => {
+    // Chunks are built while every candidate is still DRAFT. Embedding their
+    // sentences in the stored explanation is how unapproved text reached
+    // teaching; the tutor composes the body from ACTIVE concepts at serve time.
     const chunks = buildChunks(doc, LECTURE, candidates, 0);
     for (const chunk of chunks) {
-      for (const conceptId of chunk.conceptIds) {
-        const concept = candidates.find((c) => c.id === conceptId)!;
-        expect(chunk.explanation).toContain(concept.summary);
+      expect(chunk.generated).toBe(true);
+      expect(chunk.explanation).toContain(doc.title);
+      for (const concept of candidates) {
+        expect(chunk.explanation, `${chunk.id} leaks ${concept.id}`).not.toContain(
+          concept.summary,
+        );
       }
     }
   });

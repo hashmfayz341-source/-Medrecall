@@ -6,6 +6,7 @@ import type {
   SourceDocument,
   TeachingChunk,
 } from "./types";
+import { buildRetrievalItems } from "./retrieval";
 
 /**
  * Shared curriculum state.
@@ -17,7 +18,12 @@ import type {
  * records.
  */
 
-export const CURRICULUM_OVERRIDES_VERSION = 2;
+export const CURRICULUM_OVERRIDES_VERSION = 4;
+
+/** Legacy ingestion hashed a buffer after pdfjs had detached it. */
+export function hasLegacyDocumentIdentity(documentId: string): boolean {
+  return /^doc-.*-[a-f0-9]{8}$/.test(documentId);
+}
 
 /** A human edit to a candidate concept. Never changes status. */
 export interface ConceptEdit {
@@ -58,6 +64,35 @@ export function createOverrides(): CurriculumOverrides {
   };
 }
 
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every((v) => typeof v === "string");
+const status = (value: unknown) => value === "DRAFT" || value === "ACTIVE" || value === "DISCARDED";
+const textFields = (value: Record<string, unknown>, fields: string[]) => fields.every((key) => typeof value[key] === "string");
+function documentShape(value: unknown): boolean {
+  return record(value) && textFields(value, ["id", "lectureId", "title"]) && Array.isArray(value.pages) && value.pages.every((p) =>
+    record(p) && Number.isInteger(p.number) && Number(p.number) > 0 && textFields(p, ["title", "text"]));
+}
+function chunkShape(value: unknown): boolean {
+  return record(value) && textFields(value, ["id", "lectureId", "documentId", "title", "explanation"]) && Number.isFinite(value.order) &&
+    strings(value.conceptIds) && Array.isArray(value.pageNumbers) && value.pageNumbers.every((n) => Number.isInteger(n) && n > 0);
+}
+function lectureShape(value: unknown): boolean {
+  return record(value) && textFields(value, ["id", "courseId", "title"]) && Number.isFinite(value.order) &&
+    Array.isArray(value.documents) && value.documents.every(documentShape) && Array.isArray(value.chunks) && value.chunks.every(chunkShape);
+}
+function conceptShape(value: unknown): boolean {
+  if (!record(value) || !textFields(value, ["id", "courseId", "lectureId", "title", "summary"]) || !status(value.status) || !strings(value.prerequisiteIds)) return false;
+  if (value.importance !== "CORE" && value.importance !== "SUPPORTING") return false;
+  const source = value.source;
+  if (!record(source) || !textFields(source, ["courseId", "lectureId", "documentId", "excerpt"]) || !Number.isInteger(source.pageNumber) || Number(source.pageNumber) < 1) return false;
+  return Array.isArray(value.retrievalItems) && value.retrievalItems.length > 0 && value.retrievalItems.every((item) =>
+    record(item) && textFields(item, ["id", "conceptId", "prompt", "explanation"]) &&
+    ["BASIC", "CLOZE", "MECHANISM", "FREE_RECALL", "CLINICAL", "IMAGE"].includes(String(item.kind)) &&
+    strings(item.acceptableAnswers) && Array.isArray(item.requiredKeywords) && item.requiredKeywords.every(strings));
+}
+
 /**
  * Upgrade stored state to the current shape.
  *
@@ -65,13 +100,21 @@ export function createOverrides(): CurriculumOverrides {
  * the user already approved must not silently revert to DRAFT.
  */
 export function migrateOverrides(stored: unknown): CurriculumOverrides | null {
-  if (typeof stored !== "object" || stored === null) return null;
+  if (!record(stored)) return null;
   const value = stored as Partial<CurriculumOverrides>;
-  if (typeof value.version !== "number") return null;
-  if (typeof value.statusById !== "object" || value.statusById === null) return null;
-  if (value.version > CURRICULUM_OVERRIDES_VERSION) return null;
+  const KNOWN_VERSIONS = [1, 2, 3, CURRICULUM_OVERRIDES_VERSION];
+  if (typeof value.version !== "number" || !KNOWN_VERSIONS.includes(value.version)) {
+    return null;
+  }
+  if (!record(value.statusById) || !Object.values(value.statusById).every(status)) return null;
+  if (value.edits !== undefined && (!record(value.edits) || !Object.values(value.edits).every((edit) => record(edit) &&
+    (edit.title === undefined || typeof edit.title === "string") && (edit.summary === undefined || typeof edit.summary === "string")))) return null;
+  if (value.lectures !== undefined && (!Array.isArray(value.lectures) || !value.lectures.every(lectureShape))) return null;
+  if (value.concepts !== undefined && (!Array.isArray(value.concepts) || !value.concepts.every(conceptShape))) return null;
+  if (value.ingested !== undefined && (!Array.isArray(value.ingested) || !value.ingested.every((entry) => record(entry) &&
+    textFields(entry, ["lectureId", "ingestedAt"]) && documentShape(entry.document) && Array.isArray(entry.chunks) && entry.chunks.every(chunkShape)))) return null;
 
-  return {
+  const migrated: CurriculumOverrides = {
     version: CURRICULUM_OVERRIDES_VERSION,
     statusById: value.statusById,
     edits: value.edits ?? {},
@@ -79,6 +122,41 @@ export function migrateOverrides(stored: unknown): CurriculumOverrides | null {
     ingested: value.ingested ?? [],
     concepts: value.concepts ?? [],
   };
+  // An old same-name upload could replace a document's text while keeping the
+  // previous reviewer's decisions, because both took the same colliding id.
+  //
+  // Every review artefact tied to such an id is therefore untrustworthy, not
+  // just an approval: a DISCARD may have judged content that is no longer
+  // there, and an EDIT may have rewritten a different document's concept. All
+  // of it is dropped so the material is reviewed again from scratch against
+  // whatever text is actually stored now.
+  //
+  // Version 3 performed only half of this (it reset ACTIVE and kept edits), so
+  // stores already at v3 are cleaned again here.
+  if (value.version < CURRICULUM_OVERRIDES_VERSION) {
+    const legacyDocuments = new Set(
+      migrated.ingested
+        .filter((entry) => hasLegacyDocumentIdentity(entry.document.id))
+        .map((entry) => entry.document.id),
+    );
+
+    const statusById = { ...migrated.statusById };
+    const edits = { ...migrated.edits };
+    for (const concept of migrated.concepts) {
+      const untrusted =
+        legacyDocuments.has(concept.source.documentId) ||
+        hasLegacyDocumentIdentity(concept.source.documentId);
+      if (!untrusted) continue;
+      // Reset regardless of what the decision was — ACTIVE, DISCARDED or an
+      // edit. Authored Milestone 1 ids never collided and are left alone.
+      statusById[concept.id] = "DRAFT";
+      delete edits[concept.id];
+    }
+    migrated.statusById = statusById;
+    migrated.edits = edits;
+  }
+
+  return migrated;
 }
 
 function applyEdit(concept: Concept, edit: ConceptEdit | undefined): Concept {
@@ -86,10 +164,19 @@ function applyEdit(concept: Concept, edit: ConceptEdit | undefined): Concept {
   const title = edit.title?.trim();
   const summary = edit.summary?.trim();
   if (!title && !summary) return concept;
+  const nextTitle = title || concept.title;
+  const nextSummary = summary || concept.summary;
   return {
     ...concept,
-    title: title && title.length > 0 ? title : concept.title,
-    summary: summary && summary.length > 0 ? summary : concept.summary,
+    title: nextTitle,
+    summary: nextSummary,
+    // A reviewed correction must reach prompts, accepted answers and feedback,
+    // while the original source excerpt remains immutable.
+    retrievalItems: buildRetrievalItems(
+      concept.id, nextTitle, nextTitle,
+      nextSummary.replace(nextTitle, "").trim(), nextSummary,
+      "the source", concept.source.pageNumber,
+    ),
   };
 }
 
@@ -118,7 +205,12 @@ export function applyOverrides(
       lecture.documents.push(ingested.document);
     }
     for (const chunk of ingested.chunks) {
-      if (!lecture.chunks.some((c) => c.id === chunk.id)) lecture.chunks.push(chunk);
+      // A chunk reached here from an ingested document, so it IS generated —
+      // whatever the stored flag says. Stores written before the flag existed
+      // carry pre-review prose, and trusting their silence would serve it.
+      if (!lecture.chunks.some((c) => c.id === chunk.id)) {
+        lecture.chunks.push({ ...chunk, generated: true });
+      }
     }
   }
 
@@ -187,6 +279,11 @@ export function addIngestedDocument(
   ingested: IngestedDocument,
   concepts: readonly Concept[],
 ): CurriculumOverrides {
+  // Re-uploading identical bytes to this lecture must not move its chunks to
+  // the end, reset reviewed wording, or disturb progress.
+  if (overrides.ingested.some((i) => i.document.id === ingested.document.id && i.lectureId === ingested.lectureId)) {
+    return overrides;
+  }
   const withoutOld = overrides.ingested.filter(
     (i) => i.document.id !== ingested.document.id,
   );

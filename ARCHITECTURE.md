@@ -118,11 +118,10 @@ behind `lib/engine/scheduler.ts` without touching tutoring logic.
 
 ---
 
-## AD-6 — Completion is derived and monotonic
+## AD-6 — Completion is derived and stable for previously tested material
 
 **Decision.** `reconcile()` computes chunk and lecture completion from concept
-progress. The UI never asserts "this lecture is done". Completion only ever
-*adds*.
+progress. The UI never asserts "this lecture is done". Completion survives later weakness, but newly approved, unattempted concepts reopen their chunk.
 
 **Reason.** Derived state cannot drift from reality, and a client cannot fake
 progress. Monotonicity matters because a concept can go WEAK again later — when
@@ -325,8 +324,9 @@ workflows all hang off `edits` without disturbing `statusById`.
 ## AD-17 — A chunk with nothing approved can never be complete
 
 **Decision.** `isChunkComplete()` returns false when a chunk has no ACTIVE
-concepts, and `getNextStep()` returns an `AWAITING_APPROVAL` step instead of
-teaching one.
+concepts. Draft-only chunks wait for approval. Blank and explicitly discarded
+sections are skipped when there is other material to learn; an entirely
+discarded lecture earns no completion.
 
 **Reason.** Found while writing the Milestone 2 gate tests. Chunk completion
 was "every ACTIVE concept has been attempted", and `[].every(...)` is true — so
@@ -359,3 +359,22 @@ in the deployment's `node_modules`.
 **Future implication.** Any parser with a runtime-resolved worker needs the same
 treatment. It is also why the E2E suite runs against a production build: this
 failure mode is invisible in unit tests.
+
+
+## M2 audit corrections
+
+Teaching payloads now contain only ACTIVE concept summaries and their own source
+excerpts. Raw stored chunk prose and full source pages are not lesson content.
+PDF identity is computed before pdfjs detaches its input buffer and includes the
+filename, original bytes, course and lecture using SHA-256. Same-lecture repeated
+uploads are idempotent, retaining chunk order and existing review decisions.
+
+Stored curriculum version 3 quarantines ACTIVE concepts from legacy 8-digit PDF
+identities as DRAFT once during migration. Those approvals may have survived a
+same-name content replacement; the missing original bytes cannot be recovered.
+Authored Milestone 1 approvals and modern identities are preserved. A deliberate
+new review after migration persists normally. The Concept model is unchanged.
+
+Human edits rebuild retrieval prompts, answers and feedback from the reviewed
+wording while retaining the immutable SourceRef. Failed storage writes produce a
+visible warning, and other-tab status changes refresh the learning gate.

@@ -64,7 +64,7 @@ outward. The whole tutor runs headless in tests — keep it that way.
 
 | Step | Meaning | How state advances |
 |---|---|---|
-| `TEACH` | Explanation + 2–5 source pages | `markChunkTaught()` |
+| `TEACH` | ACTIVE summaries + approved source excerpts | `markChunkTaught()` |
 | `RETRIEVE` | First unaided test (`INITIAL`) | `recordAttempt()` |
 | `REMEDIATE` | Re-teach after a failure (`IMMEDIATE_REMEDIATION`) | `recordAttempt()` |
 | `INTERLEAVE` | Weak/due concept from an earlier lecture (`INTERLEAVED`) | `recordAttempt()` |
@@ -89,11 +89,12 @@ Two stores, deliberately separate (AD-8):
   documents with their generated chunks, and candidate concepts
 
 `statusById` and `edits` are separate on purpose: editing a draft must never
-approve it. `migrateOverrides()` upgrades a v1 store and keeps its approvals.
+approve it. `migrateOverrides()` preserves authored approvals, while legacy PDF
+identities require a one-time review because their old hashes could collide.
 
 Both are version-checked on read; corrupt or future-version data returns `null`
 rather than throwing. Completion is **derived** by `reconcile()` and
-**monotonic** — never write completion directly.
+stable across later weakness; newly approved, unattempted concepts reopen their chunk. Never write completion directly.
 
 ## Adding things
 
@@ -122,7 +123,7 @@ above that interface knows where state lives.
 npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
 ```
 
-147 unit tests, 28 E2E tests across iPad and desktop viewports. The E2E suite
+176 unit tests, 42 E2E tests across iPad and desktop viewports. The E2E suite
 drives the real UI through the complete demo journey, including the deliberate
 ATP-depletion failure.
 
@@ -133,7 +134,7 @@ Chromium; the config prefers it over downloading.
 
 - **`reconcile()` used to delete completion**, so failing an interleaved
   question in Lecture 2 re-locked Lecture 2 mid-session. Completion is now
-  add-only (AD-6).
+  preserved across weakness, with reopening only for newly approved, unattempted material (AD-6).
 - **Remediation used to be scoped to the current chunk**, so failing an
   interleaved question produced no re-teaching (AD-7).
 - **`ButtonLink` silently dropped `data-testid`**, so eight E2E tests timed out
@@ -157,3 +158,23 @@ Per-browser persistence, keyword grading, no OCR for scanned PDFs, no merging
 of duplicate candidates across documents, prerequisite graph not hand-editable,
 "View Source" shows the excerpt rather than the page image, one fixed course
 (lectures can be created), `reconcile()` unindexed. See ROADMAP.md.
+
+
+## Independent Milestone 2 audit
+
+The audit branch fixes teaching-text leakage, PDF identity collisions, cross-lecture
+replacement, stale retrieval after editing, late-approval skipping, blank/discarded
+chunk deadlocks, malformed curriculum persistence, silent quota errors, unsaved
+review approval and other-tab stale approval state. Tests are in
+`tests/unit/m2-audit.test.ts`, `tests/unit/ingest-route-audit.test.ts`, and
+`tests/e2e/m2-audit.spec.ts`. No Milestone 3 work or Concept-model change is included.
+
+The existing `medrecall.curriculum.v1` key remains; its payload version becomes 3.
+Legacy uploaded approvals need source review once; authored approvals survive.
+Re-upload originals if same-name files overwrote one another under Milestone 2.
+
+Local unit tests and a production API smoke check passed. E2E execution and actual
+iPad/Safari verification were blocked in the audit environment and must run before
+merging. The 42 E2E cases are defined, not claimed as passed. Remote branch creation
+was rejected by the connected GitHub integration (403), so this work was exported
+as a patch; do not assume a PR exists or has been merged.
