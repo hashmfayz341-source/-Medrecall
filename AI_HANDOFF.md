@@ -1,0 +1,124 @@
+# AI Handoff
+
+Briefing for the next contributor — human or model — picking this up cold.
+
+## What MedRecall is
+
+An adaptive medical curriculum tutor. **Not an Anki clone.** The unit of
+learning is a Concept; questions are representations of a Concept. The system,
+not the student, decides what comes next.
+
+## Read these first, in order
+
+1. `src/lib/domain/types.ts` — the whole model in one file
+2. `src/lib/domain/mastery.ts` — the rule that defines the product
+3. `src/lib/domain/gate.ts` — the safety rule
+4. `src/lib/engine/tutor.ts` — orchestration; `getNextStep()` is the heart
+5. `ARCHITECTURE.md` — why each of those looks the way it does
+
+## Rules you must not quietly break
+
+**1. DRAFT concepts never reach a learner.** Not teaching, retrieval, mastery,
+scheduling, interleaving, or Today. Enforced in `lib/domain/gate.ts` and called
+from engine entry points. If you add a new path into the learning system, it
+calls `assertActive()` or `activeOnly()`. Tests in `tests/unit/gate.test.ts`
+exist to catch you.
+
+**2. Immediate remediation success does not clear WEAK.** A correct answer in
+`IMMEDIATE_REMEDIATION` context sets `immediateRemediationPassed` and leaves
+mastery alone. Only `SPACED` / `INTERLEAVED` successes advance the ladder. This
+looks like a bug when you first read it. It is the product.
+
+**3. Mastery is never a percentage.** Five buckets. If you need more resolution,
+use FSRS stability — do not invent a number.
+
+**4. Every Concept keeps its SourceRef.** Course, lecture, document, page,
+verbatim excerpt. Excerpts must be genuine substrings of the cited page;
+`tests/unit/grading.test.ts` asserts it and has already caught two paraphrased
+quotes.
+
+**5. API keys stay server-side.** `lib/ai/index.ts` must never be imported into
+a client component. Nothing goes through `NEXT_PUBLIC_*`.
+
+**6. Keep the engine out of React.** `lib/domain` is pure and imports nothing
+outward. The whole tutor runs headless in tests — keep it that way.
+
+## How the session loop works
+
+`getNextStep(curriculum, learner, lectureId, now)` is pure. It returns one of:
+
+| Step | Meaning | How state advances |
+|---|---|---|
+| `TEACH` | Explanation + 2–5 source pages | `markChunkTaught()` |
+| `RETRIEVE` | First unaided test (`INITIAL`) | `recordAttempt()` |
+| `REMEDIATE` | Re-teach after a failure (`IMMEDIATE_REMEDIATION`) | `recordAttempt()` |
+| `INTERLEAVE` | Weak/due concept from an earlier lecture (`INTERLEAVED`) | `recordAttempt()` |
+| `LECTURE_COMPLETE` | Nothing left in this lecture | — |
+
+The UI is a thin driver: ask for the step, render it, call back, repeat.
+`tests/unit/driver.ts` drives the identical loop headlessly — if you change the
+loop, that driver is the fastest way to see the consequences.
+
+Order inside `getNextStep`: locked-lecture check → find first incomplete chunk
+→ **curriculum-wide remediation check** → interleaving (before teaching only,
+once per chunk) → teach → untested concepts → complete.
+
+## State shape
+
+Two stores, deliberately separate (AD-8):
+
+- `medrecall.learner.v1` — per-learner progress, FSRS cards, completion
+- `medrecall.curriculum.v1` — concept approval overrides (shared curriculum)
+
+Both are version-checked on read; corrupt or future-version data returns `null`
+rather than throwing. Completion is **derived** by `reconcile()` and
+**monotonic** — never write completion directly.
+
+## Adding things
+
+**A new retrieval form** — add to `RetrievalKind`, author items, extend
+`pickItem()` if selection should change. Mastery and scheduling need no changes.
+
+**A real AI provider** — implement `AiProvider` in `src/lib/ai/`, bind it in
+`getProvider()`. `extractConcepts()` must return `status: "DRAFT"` with a
+populated `SourceRef`. Run it server-side only.
+
+**A new course** — mirror `src/lib/content/pathology.ts`. Chunks are 2–5 pages.
+Excerpts must be verbatim. Give each concept at least two retrieval items so
+remediation can use a different form from the initial question.
+
+**Server-side learner state** — implement `LearnerStateRepository`. Nothing
+above that interface knows where state lives.
+
+## Verifying
+
+```bash
+npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
+```
+
+87 unit tests, 16 E2E tests across iPad and desktop viewports. The E2E suite
+drives the real UI through the complete demo journey, including the deliberate
+ATP-depletion failure.
+
+If Playwright cannot find a browser, set `CHROMIUM_PATH` to an existing
+Chromium; the config prefers it over downloading.
+
+## Traps that already bit
+
+- **`reconcile()` used to delete completion**, so failing an interleaved
+  question in Lecture 2 re-locked Lecture 2 mid-session. Completion is now
+  add-only (AD-6).
+- **Remediation used to be scoped to the current chunk**, so failing an
+  interleaved question produced no re-teaching (AD-7).
+- **`ButtonLink` silently dropped `data-testid`**, so eight E2E tests timed out
+  against a button that was plainly on screen. Prop-forwarding on wrapper
+  components matters.
+- **Playwright's iPad descriptors default to WebKit.** The `ipad` project pins
+  Chromium with an iPad viewport, DPR and touch so one browser runs everything.
+- **Two source excerpts were stitched from separate sentences** and failed the
+  verbatim-provenance test. Quote, do not paraphrase.
+
+## Current limitations
+
+Per-browser persistence, keyword grading, TypeScript-authored curriculum, no
+concept text editing, `reconcile()` unindexed. See ROADMAP.md.

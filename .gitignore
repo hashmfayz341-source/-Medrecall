@@ -28,3 +28,16 @@ yarn-error.log*
 
 # Test coverage
 coverage/
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+
+# Next
+next-env.d.ts
+.next/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
