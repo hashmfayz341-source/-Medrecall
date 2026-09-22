@@ -36,6 +36,14 @@ export default function Dashboard() {
             {curriculum.course.description}
           </p>
         </div>
+        <div className="flex flex-wrap gap-3">
+        <Link
+          href="/ingest"
+          data-testid="add-material-link"
+          className="min-h-[3rem] rounded-xl border border-ink-300 bg-white px-5 py-3 text-sm font-semibold text-ink-700"
+        >
+          Add material
+        </Link>
         <Link
           href="/concepts"
           data-testid="review-drafts-link"
@@ -48,6 +56,7 @@ export default function Dashboard() {
             </span>
           )}
         </Link>
+        </div>
       </header>
 
       {!ready ? (

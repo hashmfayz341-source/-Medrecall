@@ -1,6 +1,6 @@
 import {
-  CURRICULUM_OVERRIDES_VERSION,
   createOverrides,
+  migrateOverrides,
   type CurriculumOverrides,
 } from "@/lib/domain/curriculum";
 
@@ -10,16 +10,6 @@ export interface CurriculumOverridesRepository {
   load(): CurriculumOverrides | null;
   save(value: CurriculumOverrides): void;
   clear(): void;
-}
-
-function isOverrides(value: unknown): value is CurriculumOverrides {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value as Partial<CurriculumOverrides>;
-  return (
-    typeof v.version === "number" &&
-    typeof v.statusById === "object" &&
-    v.statusById !== null
-  );
 }
 
 export class LocalStorageCurriculumRepository
@@ -32,10 +22,9 @@ export class LocalStorageCurriculumRepository
     try {
       const raw = window.localStorage.getItem(this.key);
       if (!raw) return null;
-      const parsed: unknown = JSON.parse(raw);
-      if (!isOverrides(parsed)) return null;
-      if (parsed.version !== CURRICULUM_OVERRIDES_VERSION) return null;
-      return parsed;
+      // migrateOverrides validates the shape and upgrades older versions,
+      // so a Milestone 1 store keeps its approval decisions.
+      return migrateOverrides(JSON.parse(raw));
     } catch {
       return null;
     }

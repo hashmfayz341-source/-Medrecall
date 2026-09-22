@@ -69,6 +69,31 @@ export function LearnSession({ lectureId }: { lectureId: string }) {
     );
   }
 
+  const lectureForEmptyCheck = curriculum.course.lectures.find((l) => l.id === lectureId);
+  if (lectureForEmptyCheck && lectureForEmptyCheck.chunks.length === 0) {
+    return (
+      <Shell>
+        <Card data-testid="lecture-empty">
+          <h1 className="text-2xl font-bold text-ink-800">
+            {lectureForEmptyCheck.title} has no material yet
+          </h1>
+          <p className="prose-teach mt-3 text-ink-600">
+            Upload a PDF for this lecture, then review and approve the candidate
+            concepts. Teaching begins once at least one concept is approved.
+          </p>
+          <div className="mt-6 flex flex-wrap gap-3">
+            <ButtonLink href="/ingest" data-testid="empty-add-material">
+              Add material
+            </ButtonLink>
+            <ButtonLink href="/" variant="secondary">
+              Back to dashboard
+            </ButtonLink>
+          </div>
+        </Card>
+      </Shell>
+    );
+  }
+
   if (!step) return null;
 
   async function submit(concept: Concept, item: RetrievalItem, context: RetrievalContext, chunkId?: string) {
