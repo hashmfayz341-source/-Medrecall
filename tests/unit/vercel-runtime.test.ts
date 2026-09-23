@@ -48,9 +48,9 @@ describe("the pdfjs worker must be resolvable in the server runtime", () => {
   it("the trace verifier covers every PDF-parsing route", () => {
     // The build-time check is the real guard; this makes sure a new PDF route
     // cannot be added without also being verified.
-    const verifier = readFileSync("scripts/verify-pdf-trace.mjs", "utf8");
-    expect(verifier).toContain('"api/ingest"');
-    expect(verifier).toContain('"api/ingest/selftest"');
+    const checker = readFileSync("scripts/pdf-trace-check.mjs", "utf8");
+    expect(checker).toContain('"api/ingest"');
+    expect(checker).toContain('"api/ingest/selftest"');
   });
 });
 

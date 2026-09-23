@@ -38,14 +38,42 @@ export class PdfExtractionError extends Error {
  * a whole production investigation once already.
  */
 export function classifyExtractionError(cause: unknown): ExtractionFailure {
-  const name = (cause as { name?: string } | null)?.name ?? "";
-  const message = cause instanceof Error ? cause.message : String(cause);
+  const record =
+    typeof cause === "object" && cause !== null
+      ? (cause as { name?: unknown; code?: unknown; message?: unknown })
+      : {};
+  const name = typeof record.name === "string" ? record.name : "";
+  const code = typeof record.code === "string" ? record.code : "";
+  const message =
+    cause instanceof Error
+      ? cause.message
+      : typeof record.message === "string"
+        ? record.message
+        : "";
 
-  if (name === "PasswordException" || /password/i.test(message)) return "ENCRYPTED";
-  if (/fake worker|cannot find module|worker/i.test(message)) return "RUNTIME";
-  if (name === "InvalidPDFException" || /invalid pdf|pdf structure/i.test(message)) {
-    return "MALFORMED";
+  // pdfjs's own exception types are the most reliable signal about the file.
+  if (name === "PasswordException") return "ENCRYPTED";
+  if (name === "InvalidPDFException" || name === "FormatError") return "MALFORMED";
+
+  // Environment and bootstrap failures: the parser could not run at all, so
+  // the file was never really examined.
+  if (
+    name === "ReferenceError" ||
+    code === "ERR_MODULE_NOT_FOUND" ||
+    code === "MODULE_NOT_FOUND" ||
+    /fake worker|cannot find module|worker|is not defined|dynamic import|failed to load|DOMMatrix|Path2D|ImageData|canvas/i.test(
+      message,
+    )
+  ) {
+    return "RUNTIME";
   }
+
+  // Message-only fallbacks, after the typed checks above.
+  if (/no password given|incorrect password/i.test(message)) return "ENCRYPTED";
+  if (/invalid pdf structure|invalid pdf/i.test(message)) return "MALFORMED";
+
+  // Anything else stays UNKNOWN — and UNKNOWN is answered as a server
+  // problem, never as a bad file.
   return "UNKNOWN";
 }
 

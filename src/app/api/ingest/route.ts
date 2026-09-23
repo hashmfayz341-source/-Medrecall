@@ -4,6 +4,7 @@ import {
   classifyExtractionError,
   extractPdfPages,
 } from "@/lib/ingestion/pdf";
+import { ingestErrorResponse } from "@/lib/ingestion/ingestErrors";
 import { getProvider } from "@/lib/ai";
 import type { Concept } from "@/lib/domain/types";
 
@@ -75,23 +76,9 @@ export async function POST(request: Request) {
       cause,
     );
 
-    if (reason === "ENCRYPTED") {
-      return NextResponse.json(
-        { error: "This PDF is password protected. Remove the protection and try again." },
-        { status: 422 },
-      );
-    }
-    if (reason === "RUNTIME") {
-      // The file is probably fine; the server could not run the parser.
-      return NextResponse.json(
-        { error: "The server could not process PDFs just now. This is not a problem with your file." },
-        { status: 500 },
-      );
-    }
-    return NextResponse.json(
-      { error: "Could not read this file as a PDF." },
-      { status: 422 },
-    );
+    // Fixed messages only; see ingestErrors.ts for why UNKNOWN is a 500.
+    const { status, error } = ingestErrorResponse(reason);
+    return NextResponse.json({ error }, { status });
   }
 
   const withText = document.pages.filter((p) => p.text.trim().length > 0);
