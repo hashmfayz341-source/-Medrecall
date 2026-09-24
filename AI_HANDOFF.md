@@ -60,7 +60,8 @@ walks the import graph to enforce this. Nothing goes through `NEXT_PUBLIC_*`.
 outward. The whole tutor runs headless in tests — keep it that way.
 
 **9. Grading decision ≠ state mutation (AD-19).** Providers grade, and only
-server-side, behind `POST /api/grade`. The engine applies an already-computed
+server-side, behind `POST /api/grade`. They receive `{ concept, item, answer }`,
+including the verbatim source excerpt. The engine applies an already-computed
 grade through `recordGradedAttempt()`, which never calls a provider or the
 network. Never add a grading call inside the engine, and never let provider
 output reach learner state without passing `isValidGradeResult()`. A failed
@@ -70,6 +71,24 @@ grading request must leave learner state untouched. It is not a wrong answer.
 its mastery policy is designed the engine treats it as INCORRECT, and
 `correct` is true only for `CORRECT`. Changing that is Stage B work. The pinned
 test in `tests/unit/grade-atomicity.test.ts` is there to make it deliberate.
+
+**11. A pending grade applies only to the state it was made against (AD-20).**
+Every asynchronous caller passes the precondition captured at submit to
+`recordGradedAttempt`. If the concept was attempted since, or its wording,
+rubric or source changed, the grade is STALE and is discarded. Never "just
+apply it to the latest state": that double-counts attempts and runs FSRS
+backwards.
+
+**12. Providers write no learner-facing medical text (AD-21).** Remediation is
+`composeRemediation()`: reviewed explanation plus verbatim excerpt plus missed
+terms from the item's own rubric. "Contains the excerpt" is a provenance
+tripwire, not grounding. Never use it to admit model prose.
+
+**13. The server cannot verify ACTIVE yet, so no paid provider (AD-22).** The
+route's status check validates client-supplied state and is not authoritative.
+The domain/engine gate in the app stays mandatory. `getProvider()` refuses any
+hosted provider until server-side abuse control exists. Build that first. It
+is a Stage B prerequisite.
 
 ## How the session loop works
 
@@ -118,14 +137,18 @@ stable across later weakness; newly approved, unattempted concepts reopen their 
 **A new retrieval form** — add to `RetrievalKind`, author items, extend
 `pickItem()` if selection should change. Mastery and scheduling need no changes.
 
-**A real AI provider** — implement `AiProvider` in `src/lib/ai/`, bind it in
+**A real AI provider** — first build server-side abuse control
+(authentication, rate limiting and a spend quota, or equivalent) and set
+`HOSTED_PROVIDER_SAFEGUARDS.abuseControl` in that same change. Until then
+`getProvider()` refuses any `hosted` provider (AD-22). Then implement
+`AiProvider` in `src/lib/ai/` with `hosted: true` and bind it in
 `getProvider()` from a server-side env var. `extractConcepts()` must return
-`status: "DRAFT"` with a populated `SourceRef`. `gradeFreeAnswer()` must return
-a `GradeResult` whose `correct` matches its `outcome`. `generateRemediation()`
-must quote the concept's verbatim `source.excerpt`, or `/api/grade` rejects it.
-Nothing else changes: the route, the engine, `submitAnswer` and the UI stay
-as they are. Keep `tests/unit/grade-parity.test.ts` green for the
-deterministic provider.
+`status: "DRAFT"` with a populated `SourceRef`. `gradeFreeAnswer({ concept,
+item, answer })` must return a `GradeResult` whose `correct` matches its
+`outcome`, and whose matched and missing terms come from the item's rubric;
+other terms are dropped. It writes no remediation. Nothing else changes: the
+route, the engine, `submitAnswer` and the UI stay as they are. Keep
+`tests/unit/grade-parity.test.ts` green for the deterministic provider.
 
 **A real extraction provider** — implement `extractConcepts` in a new
 `AiProvider`. It must return `status: "DRAFT"` with a populated `SourceRef`,
@@ -145,7 +168,7 @@ above that interface knows where state lives.
 npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
 ```
 
-320 unit tests, 76 E2E tests (38 per project, iPad and desktop viewports). The E2E suite
+346 unit tests, 78 E2E tests (39 per project, iPad and desktop viewports). The E2E suite
 drives the real UI through the complete demo journey, including the deliberate
 ATP-depletion failure.
 
@@ -221,8 +244,18 @@ plus every item × context × answer shape, through both the pre-boundary
 `recordAttempt` (copied verbatim from main at 0c3f502) and the new
 route-backed flow, and demands identical learner state at every step.
 
-New tests: `grade-route`, `grade-atomicity`, `grade-parity`, `client-boundary`
-(unit), and `tests/e2e/grading-boundary.spec.ts`.
+New tests: `grade-route`, `grade-atomicity`, `grade-parity`, `client-boundary`,
+`grade-stale`, `grade-provider-contract`, `provider-policy` (unit), and
+`tests/e2e/grading-boundary.spec.ts`, including a two-tab race.
+
+Review repairs made within Stage A:
+- **H1:** stale asynchronous grades are refused by an attempt precondition
+  (AD-20).
+- **H2:** providers receive the concept and source, not just the item.
+- **M1:** remediation is composed from reviewed material, never provider prose
+  (AD-21).
+- **M2:** the route's ACTIVE check is documented as non-authoritative, and
+  hosted providers are refused until abuse control exists (AD-22).
 
 Not in Stage A: any hosted model or API key, the PARTIAL mastery policy,
 disagreement logging, model-written medical content, extraction changes,

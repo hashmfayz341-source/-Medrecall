@@ -1,8 +1,14 @@
 import { DeterministicProvider } from "./deterministic";
+import { assertProviderPermitted } from "./policy";
 import type { AiProvider } from "./provider";
 
-export type { AiProvider } from "./provider";
+export type { AiProvider, GradeFreeAnswerInput } from "./provider";
 export { DeterministicProvider } from "./deterministic";
+export {
+  HOSTED_PROVIDER_SAFEGUARDS,
+  ProviderNotPermittedError,
+  assertProviderPermitted,
+} from "./policy";
 
 /**
  * Provider resolution.
@@ -12,10 +18,13 @@ export { DeterministicProvider } from "./deterministic";
  * imported into a client component, and no key may be exposed through
  * NEXT_PUBLIC_*.
  *
- * Callers: POST /api/grade (grading + remediation) and POST /api/ingest
- * (extraction). Adding a real model is a change here plus an adapter that
- * implements AiProvider — the tutor engine and the UI do not change.
+ * Callers: POST /api/grade (the grading decision) and POST /api/ingest
+ * (extraction). Adding a real model is an adapter implementing AiProvider plus
+ * a binding here — the tutor engine, the route contracts and the UI do not
+ * change. But a hosted provider is refused by `assertProviderPermitted()`
+ * until the server-side abuse controls in ./policy.ts exist, so it cannot be
+ * switched on by an env var alone.
  */
 export function getProvider(): AiProvider {
-  return new DeterministicProvider();
+  return assertProviderPermitted(new DeterministicProvider());
 }

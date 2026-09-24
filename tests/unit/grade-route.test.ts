@@ -10,8 +10,9 @@ import {
   type GradeRequest,
 } from "@/lib/grading/request";
 import { GRADE_ERRORS } from "@/lib/grading/errors";
-import { gradeWithProvider, isSourceGrounded } from "@/lib/ai/grade";
-import { DeterministicProvider, type AiProvider } from "@/lib/ai";
+import { gradeWithProvider } from "@/lib/ai/grade";
+import { quotesSourceExcerpt } from "@/lib/grading/remediation";
+import { DeterministicProvider, type AiProvider, type GradeFreeAnswerInput } from "@/lib/ai";
 import type { Concept } from "@/lib/domain/types";
 import { applyOverrides, createOverrides, editConcept } from "@/lib/domain/curriculum";
 import { ANSWERS, CORRECT_ATP, WRONG } from "./helpers";
@@ -251,9 +252,9 @@ describe("tampered and malformed requests", () => {
 describe("provider failures never leak and never half-succeed", () => {
   const leaky = "ENOENT: no such file /var/task/node_modules/secret-sdk/index.js sk-live-KEY";
 
-  function provider(overrides: Partial<AiProvider>): AiProvider {
+  function provider(overrides: Record<string, unknown>): AiProvider {
     const base = new DeterministicProvider();
-    return Object.assign(Object.create(Object.getPrototypeOf(base)), base, overrides);
+    return Object.assign(Object.create(Object.getPrototypeOf(base)), base, overrides) as AiProvider;
   }
 
   it("a provider that throws gives a neutral, retryable 502", async () => {
@@ -290,7 +291,7 @@ describe("provider failures never leak and never half-succeed", () => {
 
   it("extra fields a provider adds are stripped, not forwarded", async () => {
     inject.provider = provider({
-      gradeFreeAnswer: async (item, answer) =>
+      gradeFreeAnswer: async ({ item, answer }: GradeFreeAnswerInput) =>
         ({ ...gradeAnswer(item, answer), raw: { prompt: "internal", usage: 123 } }) as GradeResult,
     });
     const { status, body, text } = await call(request());
@@ -301,25 +302,23 @@ describe("provider failures never leak and never half-succeed", () => {
     expect(text).not.toContain("internal");
   });
 
-  it("remediation that does not quote the source is refused", async () => {
-    inject.provider = provider({
-      generateRemediation: async () => "Mitochondria are the powerhouse of the cell.",
+  it("a provider cannot supply remediation text at all (M1)", async () => {
+    // Remediation is composed from reviewed material; any remediation method
+    // a provider happens to carry is never called.
+    const remediate = vi.fn(async () => "Mitochondria are the powerhouse of the cell.");
+    const exploding = vi.fn(async () => {
+      throw new Error(leaky);
     });
-    const { status, body } = await call(request(WRONG));
-    expect(status).toBe(502);
-    expect(body.code).toBe("GRADING_UNAVAILABLE");
-  });
-
-  it("a failing remediation fails the whole request rather than returning a bare grade", async () => {
-    inject.provider = provider({
-      generateRemediation: async () => {
-        throw new Error(leaky);
-      },
-    });
-    const { status, text } = await call(request(WRONG));
-    expect(status).toBe(502);
-    expect(text).not.toContain('"grade"');
-    assertNoDisclosure(text);
+    for (const generateRemediation of [remediate, exploding]) {
+      inject.provider = provider({ generateRemediation });
+      const { status, body, text } = await call(request(WRONG));
+      expect(status).toBe(200);
+      expect(body.remediation).toContain(ATP.source.excerpt);
+      expect(text).not.toContain("powerhouse");
+      assertNoDisclosure(text);
+    }
+    expect(remediate).not.toHaveBeenCalled();
+    expect(exploding).not.toHaveBeenCalled();
   });
 
   it("a provider that hangs times out", async () => {
@@ -330,7 +329,7 @@ describe("provider failures never leak and never half-succeed", () => {
 
   it("PARTIAL passes the boundary intact and gets remediation", async () => {
     inject.provider = provider({
-      gradeFreeAnswer: async (item, answer) => ({
+      gradeFreeAnswer: async ({ item, answer }: GradeFreeAnswerInput) => ({
         ...gradeAnswer(item, answer),
         outcome: "PARTIAL",
         correct: false,
@@ -376,10 +375,10 @@ describe("request contract", () => {
     }
   });
 
-  it("the source-grounding check requires the verbatim excerpt", () => {
-    expect(isSourceGrounded(`… "${ATP.source.excerpt}"`, ATP.source.excerpt)).toBe(true);
-    expect(isSourceGrounded("paraphrase only", ATP.source.excerpt)).toBe(false);
-    expect(isSourceGrounded("anything", "   ")).toBe(false);
+  it("the provenance (quote) check requires the verbatim excerpt", () => {
+    expect(quotesSourceExcerpt(`… "${ATP.source.excerpt}"`, ATP.source.excerpt)).toBe(true);
+    expect(quotesSourceExcerpt("paraphrase only", ATP.source.excerpt)).toBe(false);
+    expect(quotesSourceExcerpt("anything", "   ")).toBe(false);
   });
 
   it("the route never reads a NEXT_PUBLIC_ variable", () => {

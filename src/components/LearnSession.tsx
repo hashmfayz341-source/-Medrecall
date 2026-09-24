@@ -14,7 +14,11 @@ import type { Concept, RetrievalItem, RetrievalContext } from "@/lib/domain/type
 import type { GradeResult } from "@/lib/grading";
 import { requestGrade } from "@/lib/grading/client";
 import { GRADE_REQUEST_LIMITS } from "@/lib/grading/request";
-import { createSubmitGuard, submitAnswer } from "@/lib/session/submitAnswer";
+import {
+  STALE_MESSAGE,
+  createSubmitGuard,
+  submitAnswer,
+} from "@/lib/session/submitAnswer";
 
 /*
  * No AI provider is imported here. Answers are graded by POST /api/grade on
@@ -33,7 +37,7 @@ interface Feedback {
 }
 
 export function LearnSession({ lectureId }: { lectureId: string }) {
-  const { curriculum, learner, setLearner, ready } = useLearner();
+  const { curriculum, learner, setLearner, snapshot, syncFromStorage, ready } = useLearner();
   const [answer, setAnswer] = useState("");
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -43,9 +47,12 @@ export function LearnSession({ lectureId }: { lectureId: string }) {
     /** The question it belongs to, so it never shows against a different one. */
     itemId: string;
   } | null>(null);
+  /** A grade arrived for a question that had changed; nothing was recorded. */
+  const [stale, setStale] = useState(false);
   const guard = useRef(createSubmitGuard());
-  // Grading is asynchronous; the grade is applied to whatever state is current
-  // when it arrives, not to a snapshot from before the request.
+  // The state the learner is looking at. The attempt's precondition is
+  // captured from this — what they actually answered — while the grade is
+  // applied to the freshest persisted state via `snapshot()`.
   const latest = useRef({ curriculum, learner });
   useEffect(() => {
     latest.current = { curriculum, learner };
@@ -126,8 +133,14 @@ export function LearnSession({ lectureId }: { lectureId: string }) {
           attempt: { conceptId: concept.id, itemId: item.id, context, chunkId, now: new Date() },
           answer: submitted,
           transport: (request) => requestGrade(request),
-          latest: () => latest.current,
+          latest: snapshot,
         });
+        if (!outcome.ok && outcome.reason === "STALE") {
+          // Not applied, not an error to retry: the question moved on.
+          setStale(true);
+          syncFromStorage();
+          return;
+        }
         if (!outcome.ok) {
           // Nothing was recorded: no mastery, schedule or progress change.
           setGradeError({
@@ -158,6 +171,30 @@ export function LearnSession({ lectureId }: { lectureId: string }) {
     setFeedback(null);
     setAnswer("");
     setGradeError(null);
+  }
+
+  function continueAfterStale() {
+    setStale(false);
+    setGradeError(null);
+    setAnswer("");
+    syncFromStorage();
+  }
+
+  /* ---------------- Stale grade view ---------------- */
+  if (stale) {
+    return (
+      <Shell>
+        <Card data-testid="grade-stale" role="alert">
+          <h1 className="text-2xl font-bold text-ink-800">This question has moved on</h1>
+          <p className="prose-teach mt-3 text-ink-600">{STALE_MESSAGE}</p>
+          <div className="mt-6">
+            <Button data-testid="grade-stale-continue" onClick={continueAfterStale}>
+              Continue to the current question
+            </Button>
+          </div>
+        </Card>
+      </Shell>
+    );
   }
 
   /* ---------------- Feedback view ---------------- */

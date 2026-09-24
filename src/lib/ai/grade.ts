@@ -5,6 +5,11 @@ import {
   type GradeResponse,
 } from "@/lib/grading/request";
 import type { GradingFailure } from "@/lib/grading/errors";
+import {
+  composeRemediation,
+  quotesSourceExcerpt,
+  restrictToReviewedTerms,
+} from "@/lib/grading/remediation";
 import type { AiProvider } from "./provider";
 
 export type { GradingFailure };
@@ -14,11 +19,15 @@ export type { GradingFailure };
  *
  * Runs a provider against one validated request and turns whatever comes back
  * into either a small, validated GradeResponse or a failure code. Provider
- * output is untrusted: a hosted model can time out, throw, return the wrong
- * shape, or re-teach without citing the source. Each of those is a failure,
- * and a failure never produces a partial response the browser could act on.
+ * output is untrusted: a hosted model can time out, throw or return the wrong
+ * shape. Each of those is a failure, and a failure never produces a partial
+ * response the browser could act on.
  *
- * This module never sees learner state. It decides the assessment only.
+ * The provider decides the ASSESSMENT only — the outcome, and which of the
+ * item's own rubric terms were matched or missed. It writes no learner-facing
+ * text: remediation is composed here, deterministically, from the item's
+ * reviewed explanation and the concept's verbatim source excerpt
+ * (`composeRemediation`). This module never sees learner state.
  */
 
 export type GradingOutcome =
@@ -26,10 +35,9 @@ export type GradingOutcome =
   | { ok: false; failure: GradingFailure };
 
 /**
- * Per provider call. A wrong answer makes two calls (grade, then remediation),
- * so two full timeouts still finish inside the route's 30 s maxDuration and
- * well inside the browser's 35 s timeout — a slow provider surfaces as a clean
- * retryable 504, never as a platform timeout.
+ * Per provider call. Two full timeouts would still finish inside the route's
+ * 30 s maxDuration and well inside the browser's 35 s timeout — a slow
+ * provider surfaces as a clean retryable 504, never as a platform timeout.
  */
 export const DEFAULT_GRADING_TIMEOUT_MS = 12_000;
 
@@ -49,16 +57,6 @@ async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
   }
 }
 
-/**
- * Remediation is only acceptable if it quotes the concept's verbatim source
- * excerpt. That keeps re-teaching anchored to the approved page rather than
- * to whatever a model chose to say.
- */
-export function isSourceGrounded(remediation: string, excerpt: string): boolean {
-  const quote = excerpt.trim();
-  return quote.length > 0 && remediation.includes(quote);
-}
-
 export async function gradeWithProvider(
   provider: AiProvider,
   request: GradeRequest,
@@ -69,38 +67,33 @@ export async function gradeWithProvider(
 
   let raw: unknown;
   try {
-    raw = await withTimeout(provider.gradeFreeAnswer(item, answer), timeoutMs);
+    // The grader sees the approved concept and its source, not just the item.
+    raw = await withTimeout(provider.gradeFreeAnswer({ concept, item, answer }), timeoutMs);
   } catch (cause) {
     return { ok: false, failure: cause instanceof Timeout ? "PROVIDER_TIMEOUT" : "PROVIDER_ERROR" };
   }
   if (!isValidGradeResult(raw)) return { ok: false, failure: "MALFORMED_GRADE" };
-  const grade = sanitizeGradeResult(raw);
+  const checked = sanitizeGradeResult(raw);
+
+  // Terms a grader reports are limited to this item's reviewed vocabulary, so
+  // no provider-invented wording travels onward in the grade either.
+  const grade = {
+    ...checked,
+    matched: restrictToReviewedTerms(checked.matched, item),
+    missing: restrictToReviewedTerms(checked.missing, item),
+  };
 
   let remediation: string | null = null;
   if (grade.outcome !== "CORRECT") {
-    let text: unknown;
-    try {
-      text = await withTimeout(
-        provider.generateRemediation({ concept, item, grade, learnerAnswer: answer }),
-        timeoutMs,
-      );
-    } catch (cause) {
-      return {
-        ok: false,
-        failure: cause instanceof Timeout ? "PROVIDER_TIMEOUT" : "PROVIDER_ERROR",
-      };
-    }
+    remediation = composeRemediation({ concept, item, grade });
+    // Tripwire on our own composer, not a grounding proof: see
+    // quotesSourceExcerpt(). Free-form text is never admitted by this check.
     if (
-      typeof text !== "string" ||
-      text.trim().length === 0 ||
-      text.length > GRADE_REQUEST_LIMITS.maxRemediationChars
+      remediation.length > GRADE_REQUEST_LIMITS.maxRemediationChars ||
+      !quotesSourceExcerpt(remediation, concept.source.excerpt)
     ) {
-      return { ok: false, failure: "MALFORMED_REMEDIATION" };
+      return { ok: false, failure: "REMEDIATION_UNAVAILABLE" };
     }
-    if (!isSourceGrounded(text, concept.source.excerpt)) {
-      return { ok: false, failure: "UNGROUNDED_REMEDIATION" };
-    }
-    remediation = text;
   }
 
   return {

@@ -15,7 +15,8 @@ import type { GradingConcept } from "@/lib/grading/request";
  * import a vendor SDK.
  *
  * API keys stay server-side. Implementations that call a hosted model must run
- * inside a route handler or server action — never in a client component.
+ * inside a route handler or server action — never in a client component — and
+ * may not be enabled at all until the safeguards in `./policy.ts` exist.
  */
 
 export interface ExtractConceptsInput {
@@ -30,19 +31,26 @@ export interface TeachingInput {
   pages: SourceDocument["pages"];
 }
 
-export interface RemediationInput {
-  /**
-   * The narrow concept slice the grading boundary carries: identity, wording,
-   * status and provenance. A full Concept satisfies it too.
-   */
+/**
+ * Everything a grader may use to assess one answer: the approved concept's
+ * identity, wording and verbatim SourceRef excerpt, the retrieval item with
+ * its reviewed rubric, and the learner's answer. A model grader grades
+ * against this — the source — not against its own knowledge.
+ */
+export interface GradeFreeAnswerInput {
   concept: GradingConcept;
   item: RetrievalItem;
-  grade: GradeResult;
-  learnerAnswer: string;
+  answer: string;
 }
 
 export interface AiProvider {
   readonly name: string;
+  /**
+   * True when calling this provider costs money or reaches a third party. A
+   * hosted provider is refused by `assertProviderPermitted()` until the
+   * server-side abuse controls it needs exist (see ./policy.ts).
+   */
+  readonly hosted: boolean;
   /**
    * Turn source pages into CANDIDATE concepts. Implementations MUST return
    * concepts with status "DRAFT" and a populated SourceRef — extraction never
@@ -52,13 +60,11 @@ export interface AiProvider {
   generateTeachingExplanation(input: TeachingInput): Promise<string>;
   generateRetrievalItems(concept: Concept): Promise<RetrievalItem[]>;
   /**
-   * Assess one answer. Decides the verdict ONLY — it never sees or writes
-   * learner state. Runs server-side, behind POST /api/grade.
+   * Assess one answer. Decides the verdict ONLY: the outcome, and which of the
+   * item's own rubric terms were matched or missed. It never sees or writes
+   * learner state, and it writes no learner-facing text — remediation is
+   * composed deterministically from reviewed material (see
+   * `lib/grading/remediation.ts`). Runs server-side, behind POST /api/grade.
    */
-  gradeFreeAnswer(item: RetrievalItem, answer: string): Promise<GradeResult>;
-  /**
-   * Re-teach after a non-CORRECT answer. Must stay grounded in the concept's
-   * verbatim source excerpt; the grading service rejects output that is not.
-   */
-  generateRemediation(input: RemediationInput): Promise<string>;
+  gradeFreeAnswer(input: GradeFreeAnswerInput): Promise<GradeResult>;
 }

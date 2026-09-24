@@ -15,8 +15,7 @@ export type GradingFailure =
   | "PROVIDER_TIMEOUT"
   | "PROVIDER_ERROR"
   | "MALFORMED_GRADE"
-  | "MALFORMED_REMEDIATION"
-  | "UNGROUNDED_REMEDIATION";
+  | "REMEDIATION_UNAVAILABLE";
 
 export type GradeErrorCode =
   | GradeRequestError

@@ -13,12 +13,13 @@ lib/session/            One learner submission: gate → server grade → engine
 lib/engine/             Tutor orchestration, priority, FSRS scheduling
         ↓ calls
 lib/domain/             Pure types, approval gate, mastery rules  (no imports out)
-lib/grading/            Deterministic grading, grade validation, /api/grade wire contract
+lib/grading/            Deterministic grading, grade validation, /api/grade wire
+                        contract, remediation composed from reviewed material
 lib/ingestion/          PDF text extraction + candidate concept generation
 lib/persistence/        Repository interfaces + implementations
 lib/content/            Authored curriculum data
 lib/ai/                 SERVER ONLY. Provider interface, deterministic provider,
-                        grading service used by /api/grade
+                        grading service used by /api/grade, hosted-provider policy
 ```
 
 Dependencies point inward. `lib/domain` imports nothing from the outer layers.
@@ -197,12 +198,14 @@ regression oracle.
 
 ## AD-10 — Provider-agnostic AI interface, keys server-side
 
-**Decision.** `AiProvider` declares `extractConcepts`,
-`generateTeachingExplanation`, `generateRetrievalItems`, `gradeFreeAnswer` and
-`generateRemediation`. `DeterministicProvider` implements it with authored
-content. No vendor SDK is imported anywhere.
+**Decision.** `AiProvider` declares `hosted`, `extractConcepts`,
+`generateTeachingExplanation`, `generateRetrievalItems` and
+`gradeFreeAnswer({ concept, item, answer })`. `DeterministicProvider`
+implements it with authored content. No vendor SDK is imported anywhere.
+(`generateRemediation` was removed from the interface in Milestone 3 Stage A:
+see AD-21.)
 
-**Reason.** Vendor choice should be a one-line change. Extraction must always
+**Reason.** Vendor choice should be an adapter plus a binding, gated by AD-22. Extraction must always
 return DRAFT concepts with a populated `SourceRef`, whoever implements it.
 
 **Tradeoff.** The interface is guessed ahead of a real model integration and
@@ -373,23 +376,31 @@ failure mode is invisible in unit tests.
 **Decision.** Assessing an answer and applying that assessment to learner
 state are two separate steps, owned by two separate parties.
 
-- **The provider decides the assessment.** `POST /api/grade` runs
-  `getProvider().gradeFreeAnswer()` server-side and, when the answer is not
-  fully correct, `generateRemediation()`. It returns a small validated
-  `{ provider, conceptId, itemId, grade, remediation }` and nothing else. It
-  never sees, and cannot write, learner state.
+- **The provider decides the assessment, and only the assessment.**
+  `POST /api/grade` calls `getProvider().gradeFreeAnswer({ concept, item,
+  answer })` server-side. The provider receives the approved concept's
+  identity, wording and verbatim `SourceRef` excerpt, the retrieval item with
+  its reviewed rubric, and the answer, so a future model can grade against the
+  source without another interface change. It returns an outcome and the
+  rubric terms matched or missed. It writes no learner-facing text (AD-21). The
+  route returns a small validated `{ provider, conceptId, itemId, grade,
+  remediation }` and nothing else. The provider never sees, and cannot write,
+  learner state.
 - **The deterministic engine decides what that assessment does.**
-  `recordGradedAttempt(curriculum, learner, input, grade)` in
+  `recordGradedAttempt(curriculum, learner, input, grade, precondition?)` in
   `lib/engine/tutor.ts` is pure. It re-checks the approval gate and that the
-  item belongs to the concept, validates the grade, then applies mastery, FSRS,
-  interleaving bookkeeping and completion atomically. It never calls a
-  provider or the network, and it never re-grades.
+  item belongs to the concept. It checks the attempt precondition (AD-20) and
+  validates the grade. Then it applies mastery, FSRS, interleaving bookkeeping
+  and completion atomically. It never calls a provider or the network, and it
+  never re-grades.
 
 The learner flow is:
 
 ```
-submit → gate check in browser → POST /api/grade → provider grades (server)
-       → reply validated in browser → recordGradedAttempt → persist → feedback
+submit → gate check + precondition captured (browser)
+       → POST /api/grade → provider decides the grade; remediation composed from reviewed material (server)
+       → reply validated → precondition re-checked against the freshest persisted state (browser)
+       → recordGradedAttempt → persist → feedback
 ```
 
 `recordAttempt()` survives as a deterministic compatibility wrapper
@@ -410,27 +421,35 @@ browser-local, so the browser sends the narrow slice needed to grade one
 attempt: the concept's identity, title, summary, status and `SourceRef`, the
 one retrieval item, and the answer. Unknown keys are rejected at every level,
 so a client cannot supply a prompt, instructions, model or provider options.
-The route rejects:
-non-ACTIVE concepts (422), an item whose `conceptId` is not the concept (400),
-a missing or empty source excerpt or cross-lecture provenance (400), an empty
-answer (400), an answer over 4,000 characters (413), and bodies over 256 KB
-(413). Error bodies are `{ code, error, retryable }` with fixed strings. The
-browser shows messages by code from its own table.
+The route rejects: a `status` other than ACTIVE (422), an item whose
+`conceptId` is not the concept (400), a missing or empty source excerpt or
+cross-lecture provenance (400), an empty answer (400), an answer over 4,000
+characters (413), and bodies over 256 KB (413). Error bodies are
+`{ code, error, retryable }` with fixed strings. The browser shows messages by
+code from its own table.
 
-**Provider output is untrusted.** `lib/ai/grade.ts` enforces a timeout
-(12 s per provider call, so grade + remediation fit the route's 30 s budget), validates and strips the grade to its known fields, and fails the
-whole request if the remediation text is missing, oversized, or does not quote
-the concept's verbatim source excerpt. A failed remediation never degrades
-into a bare grade. Every provider failure is a neutral, retryable 502/504 with
-no exception text, stack, path, prompt or raw provider response.
+**The route's ACTIVE check is not authoritative.** The server has no
+curriculum of its own yet, so `status`, rubric and source are whatever the
+caller sends. A direct caller can forge `status: "ACTIVE"`. The route check
+validates client-supplied state. It catches bugs and honest mistakes, not a
+determined caller. The authoritative approval gate for the legitimate app
+is the domain/engine gate (`assertActive` in `resolveAttemptTarget`, run
+before the request is built and again before the grade is applied). It
+remains mandatory. A server-authoritative gate needs server-side curriculum
+(Milestone 4). See AD-22 for why this matters before any paid provider.
+
+**Provider output is untrusted.** `lib/ai/grade.ts` enforces a 12 s timeout
+per provider call, validates the grade and strips it to its known fields, and
+restricts its matched and missing terms to the item's own reviewed vocabulary.
+Every provider failure is a neutral, retryable 502/504 with no exception text,
+stack, path, prompt or raw provider response.
 
 **Atomicity.** `lib/session/submitAnswer.ts` calls the engine only after a
-validated grade exists, and applies it to the state that is current when the
-reply arrives, re-checking the gate. A concept un-approved mid-flight is
-refused. Any failure returns the learner state untouched. A failed grading
-request is not a failed retrieval attempt: no attempt counter, no WEAK, no
-FSRS lapse, no interleaving bookkeeping. A single-flight guard plus a
-disabled button stop a double tap from recording two attempts.
+validated grade exists and the precondition still holds (AD-20). Any failure
+returns the learner state untouched. A failed grading request is not a failed
+retrieval attempt: no attempt counter, no WEAK, no FSRS lapse, no interleaving
+bookkeeping. A single-flight guard plus a disabled button stop a double tap
+from recording two attempts.
 
 **Reason.** A model call can fail, time out, return malformed output, or
 disagree with the deterministic grader. When grading and mutation were fused
@@ -443,16 +462,119 @@ engine, not the grader.
 **Tradeoff.** Grading now needs a network round trip, so offline use of the
 learning loop is lost. While curriculum stays browser-local, the server grades
 against the rubric the browser sends. The boundary protects learner state and
-provider keys, but it does not make grading tamper-proof against the learner's
-own browser. That is no weaker than before, because the learner already owns
-their local state. It closes once curriculum is served from the server
-(Milestone 4).
+keeps provider code server-side. It does not make grading tamper-proof against
+the learner's own browser, nor stop a direct caller. The first is no weaker
+than before, because the learner already owns their local state. The second
+is harmless while the provider is free (AD-22).
 
-**Future implication.** A real model is an adapter plus a `getProvider()`
-binding. The tutor engine, `submitAnswer`, the UI and the response contract do
-not change. Stage B adds the PARTIAL mastery policy and disagreement logging.
-`tests/unit/grade-parity.test.ts` must keep passing for the deterministic
-provider.
+**Future implication.** A real model is an adapter implementing
+`gradeFreeAnswer` plus a `getProvider()` binding, and it is refused until the
+AD-22 safeguards exist. The tutor engine, `submitAnswer`, the UI and the
+response contract do not change. Stage B adds the PARTIAL mastery policy and
+disagreement logging. `tests/unit/grade-parity.test.ts` must keep passing for
+the deterministic provider.
+
+---
+
+## AD-20 — A pending grade applies only to the state it was made against
+
+**Decision.** Optimistic concurrency on every asynchronous attempt. At submit,
+`captureAttemptPrecondition()` records the concept and item ids, this
+concept's progress version (`totalAttempts`, `lastAttemptAt`, the FSRS
+`last_review`) and `gradingTargetFingerprint()`. The fingerprint is a
+deterministic serialisation of every field grading depends on: the concept's
+identity, title, summary and status, its full `SourceRef`, and the item's id,
+kind, prompt, rubric, accepted answers and explanation. When the grade
+arrives, `recordGradedAttempt(..., precondition)` refuses with
+`StaleAttemptError`, before touching anything, if:
+
+- the ids differ (`TARGET_MISMATCH`);
+- the concept, item, rubric or source changed (`TARGET_CHANGED`);
+- this concept was attempted since, in this tab or another (`PROGRESS_CHANGED`);
+- the attempt time is earlier than the card's `last_review` or the concept's
+  last attempt (`OUT_OF_ORDER`). FSRS is never run backwards.
+
+The precondition is captured from the state the learner was shown. The grade
+is applied to the freshest persisted state: `LearnerProvider.snapshot()`
+reads localStorage, so another tab's write is seen even before its storage
+event arrives. Progress on other concepts does not invalidate the attempt and
+is preserved rather than overwritten. A stale grade shows "This question has
+moved on" with a Continue button, and nothing is recorded. It is not an error
+to retry: the learner is taken to the current question.
+
+**Reason.** Grading became asynchronous. Without this, a grade computed while
+another tab answered the same question was applied on top, recording one
+question twice and advancing mastery and FSRS twice. That was reproduced in
+the E2E suite before the fix: two attempts for one question. A grade computed
+against an old rubric could also be credited to an edited item.
+
+**Tradeoff.** Legitimate concurrent use, such as two tabs on the same question,
+discards the slower answer instead of merging it. If the device clock runs
+backwards past a card's last review, attempts on that concept are refused as
+OUT_OF_ORDER until the clock passes it again. Both are deliberate: safety of
+the schedule over availability of one attempt. localStorage has no
+transactions, so a write from another tab between the snapshot read and this
+tab's write can still be lost. This is the pre-existing multi-tab limit,
+narrowed rather than removed.
+
+**Future implication.** Server-side learner state (Milestone 4) should make
+the same precondition a real compare-and-swap on the stored record.
+
+---
+
+## AD-21 — Remediation is composed from reviewed material, never written by a provider
+
+**Decision.** The provider decides whether remediation is needed (the outcome)
+and which of the item's own rubric terms were missed. The learner-facing text
+is assembled deterministically on the server by `composeRemediation()` in
+`lib/grading/remediation.ts`, from exactly three parts:
+
+1. a fixed sentence naming missed terms, restricted to terms already in the
+   item's reviewed rubric or accepted answers (`restrictToReviewedTerms`);
+2. the item's reviewed `explanation`;
+3. the concept's verbatim `SourceRef` excerpt, document and page.
+
+`generateRemediation` is no longer part of `AiProvider`, and the grading
+service never calls a provider for text.
+
+**What a future hosted model may create: no learner-facing medical prose at
+all.** Its influence on what the learner reads is limited to the verdict and a
+selection among the item's own reviewed terms. Enabling model-written
+explanations would need a new, structured grounding contract and its own
+review. It cannot happen through this path.
+
+**Why not "remediation must quote the excerpt"?** Stage A first shipped that
+check, and it is not grounding. A paragraph can quote the source verbatim and
+add invented medicine around it. A regression test shows exactly that passing
+the old check. The check survives only as `quotesSourceExcerpt()`, a
+provenance tripwire on our own composer's output, and is documented as never
+admitting free-form text.
+
+**Tradeoff.** Remediation stays as good as the reviewed explanation, no
+better. Richer re-teaching waits for a grounding contract.
+
+---
+
+## AD-22 — No paid hosted provider without server-side abuse control
+
+**Decision.** `AiProvider.hosted` declares whether a provider costs money or
+reaches a third party. `getProvider()` always returns through
+`assertProviderPermitted()` (`lib/ai/policy.ts`), which refuses any provider
+that is not explicitly `hosted: false` unless every
+`HOSTED_PROVIDER_SAFEGUARDS` flag is true. The only flag, `abuseControl`, is
+false and frozen, because none exists: no authentication, rate limiting or
+spend quota on `/api/grade` or `/api/ingest`.
+
+**Reason.** The server cannot authenticate callers or verify approval yet
+(AD-19). Anyone can POST a forged ACTIVE concept to `/api/grade`. With the
+deterministic provider that costs nothing. With a paid model it is an open
+relay for spend and abuse.
+
+**Stage B prerequisite.** Before any hosted provider is bound, implement
+server-side abuse control on every route that calls it: authentication,
+per-user or per-IP rate limiting and a spend quota, or an equivalent
+protection. Set `abuseControl: true` only in that same reviewed change.
+Changing an env var alone cannot enable a paid model.
 
 ## M2 audit corrections
 

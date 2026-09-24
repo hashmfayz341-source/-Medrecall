@@ -63,13 +63,32 @@ A complete tutor running with no AI key.
       submits record one attempt
 - [x] Deterministic parity with the pre-boundary flow, tested step by step
 - [x] Deterministic grading retained as fallback and regression oracle
+- [x] Stale asynchronous grades refused: attempt precondition with progress
+      version and grading-target fingerprint (AD-20)
+- [x] Providers grade against `{ concept, item, answer }`, including the
+      verbatim source excerpt
+- [x] Remediation composed from reviewed material only, never provider prose
+      (AD-21)
+- [x] Hosted providers refused by `getProvider()` until abuse control exists
+      (AD-22)
+
+### Stage B prerequisites (must land before any hosted provider)
+
+- [ ] **Server-side abuse control** on every route that calls a paid provider:
+      authentication, per-user or per-IP rate limiting and a spend quota, or
+      equivalent. Until curriculum is server-side, the route cannot verify
+      ACTIVE status or the rubric, so anyone can call it.
+      `HOSTED_PROVIDER_SAFEGUARDS.abuseControl` is flipped only in that
+      change.
 
 ### Later stages
 
-- [ ] A hosted model provider, as an adapter behind `getProvider()`
+- [ ] A hosted model provider, as an adapter behind `getProvider()` (after the
+      prerequisite above)
 - [ ] PARTIAL mastery policy (partial credit feeding a finer mastery signal)
-- [ ] Model-generated remediation grounded strictly in the source excerpt
-      (the boundary already rejects remediation that does not quote it)
+- [ ] Richer remediation beyond reviewed material. This needs a structured
+      grounding contract first. Checking that text "contains the excerpt" is
+      not grounding (AD-21).
 - [ ] Disagreement logging between deterministic and model grading
 
 ## Milestone 4 — Accounts and sync

@@ -51,3 +51,26 @@ export class ItemConceptMismatchError extends Error {
     this.itemId = itemId;
   }
 }
+
+/** Why a pending grade no longer applies to the current state. */
+export type StaleAttemptReason =
+  | "TARGET_MISMATCH"
+  | "TARGET_CHANGED"
+  | "PROGRESS_CHANGED"
+  | "OUT_OF_ORDER";
+
+/**
+ * Raised when a grade was computed for a question or a progress record that
+ * has since changed — answered in another tab, edited, or re-sourced. The
+ * grade is discarded rather than folded into state it was not made against.
+ * Thrown before any state is touched.
+ */
+export class StaleAttemptError extends Error {
+  readonly reason: StaleAttemptReason;
+
+  constructor(reason: StaleAttemptReason) {
+    super(`Refusing to apply a stale attempt: ${reason}`);
+    this.name = "StaleAttemptError";
+    this.reason = reason;
+  }
+}

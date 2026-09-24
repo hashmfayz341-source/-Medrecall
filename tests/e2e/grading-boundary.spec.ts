@@ -195,3 +195,46 @@ test("a double submit records exactly one attempt", async ({ page }) => {
   expect(calls).toBe(1);
   expect(await attemptsFor(page, conceptId)).toBe(1);
 });
+
+test("cross-tab: a grade pending in one tab is not applied after another tab answered the same question", async ({
+  page,
+}) => {
+  const { conceptId, answer } = await toFirstQuestion(page);
+  const other = await page.context().newPage();
+  await other.goto(`/learn/${L1}`);
+  await expect(other.getByTestId("step-retrieve")).toHaveAttribute("data-concept-id", conceptId);
+
+  // Tab A submits, and its grade is held in flight.
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  let heldRequests = 0;
+  await page.route("**/api/grade", async (route) => {
+    heldRequests++;
+    await held;
+    await route.continue();
+  });
+  await page.getByTestId("answer-input").fill(answer);
+  await page.getByTestId("submit-answer").click();
+  await expect(page.getByTestId("submit-answer")).toBeDisabled();
+
+  // Tab B answers the same question and finishes first.
+  await other.getByTestId("answer-input").fill(answer);
+  await other.getByTestId("submit-answer").click();
+  await expect(other.getByTestId("feedback-correct")).toBeVisible();
+  expect(await attemptsFor(page, conceptId)).toBe(1);
+  const afterB = await storedLearner(page);
+
+  // Tab A's old grade arrives. It must not be applied a second time.
+  release();
+  await expect(page.getByTestId("grade-stale")).toBeVisible();
+  await expect(page.getByTestId("feedback")).toHaveCount(0);
+  expect(heldRequests).toBe(1);
+  expect(await attemptsFor(page, conceptId)).toBe(1);
+  expect(await storedLearner(page)).toBe(afterB);
+
+  // Continuing takes tab A to the current question, not the answered one.
+  await page.getByTestId("grade-stale-continue").click();
+  await expect(page.getByTestId("grade-stale")).toHaveCount(0);
+  await expect(page.getByTestId("step-retrieve")).not.toHaveAttribute("data-concept-id", conceptId);
+  await other.close();
+});
