@@ -120,7 +120,32 @@ const shortPages = [
   ["Tubular Function", "The proximal tubule reabsorbs most of the filtered sodium."],
 ];
 
+/**
+ * A lecture-sized document: 25 pages of ordinary selectable text, each with a
+ * heading and several sentences, plus a unique marker so page ordering can be
+ * asserted exactly. The tiny fixtures exercise parsing; this one exercises the
+ * shape of real teaching material.
+ */
+const lecturePages = Array.from({ length: 25 }, (_, i) => {
+  const n = i + 1;
+  return [
+    `Cell Adaptive Responses - Section ${n}`,
+    `Marker ${n} identifies this page uniquely within the lecture.`,
+    `Hypertrophy is an increase in the size of individual cells in section ${n}.`,
+    `Hyperplasia is an increase in the number of cells within a tissue.`,
+    `Atrophy is a reduction in cell size caused by reduced workload or supply.`,
+    `Metaplasia is a reversible change from one differentiated cell type to another.`,
+    `Adaptation fails when the stress exceeds the capacity of the cell to respond.`,
+    `Persistent stress in section ${n} leads to injury rather than adaptation.`,
+  ];
+});
+
 mkdirSync(resolve(here, "../tests/fixtures"), { recursive: true });
+writeFileSync(
+  resolve(here, "../tests/fixtures/lecture-25-pages.pdf"),
+  buildPdf(lecturePages),
+);
+console.log("wrote tests/fixtures/lecture-25-pages.pdf (25 pages)");
 writeFileSync(
   resolve(here, "../tests/fixtures/cell-injury.pdf"),
   buildPdf(cellInjuryPages),

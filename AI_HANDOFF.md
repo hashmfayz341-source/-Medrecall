@@ -149,6 +149,14 @@ Chromium; the config prefers it over downloading.
   failed". `serverExternalPackages: ["pdfjs-dist"]` fixes it. Unit tests under
   plain Node never reproduce this — which is why E2E runs against a production
   build.
+- **Simulating a Vercel function with `output: "standalone"` is only valid
+  OUTSIDE the repository.** Inside the repo, Node's module resolution walks up
+  from `.next/standalone/node_modules` to the repo's own `node_modules`, so a
+  file you delete from the bundle is silently found in the parent. Copy
+  `.next/standalone` somewhere with no `node_modules` ancestor before testing a
+  missing-file scenario. Standalone also merges every route's traced files into
+  one tree, so it cannot reveal a per-route gap; `npm run build` checks the
+  per-route manifests for that.
 - **An all-DRAFT chunk used to complete itself** and unlock the next lecture,
   because `[].every(...)` is true. See rule 6 above.
 

@@ -1,5 +1,6 @@
 import type { Page } from "@/lib/domain/types";
 import { createHash } from "node:crypto";
+import { createModuleRequire as createRequire } from "./moduleRequire";
 
 /**
  * Page-by-page PDF text extraction.
@@ -12,6 +13,69 @@ import { createHash } from "node:crypto";
  * Runs server-side (route handler) using the pdfjs legacy build, which needs no
  * worker and no DOM.
  */
+
+/** Why extraction failed, so logs can tell these apart. */
+export type ExtractionFailure =
+  | "ENCRYPTED"
+  | "MALFORMED"
+  | "RUNTIME"
+  | "UNKNOWN";
+
+export class PdfExtractionError extends Error {
+  readonly reason: ExtractionFailure;
+  constructor(reason: ExtractionFailure, message: string, cause?: unknown) {
+    super(message, { cause });
+    this.name = "PdfExtractionError";
+    this.reason = reason;
+  }
+}
+
+/**
+ * Classify a pdfjs failure.
+ *
+ * A worker or module-resolution failure is a deployment problem, not a bad
+ * file, and must never be reported as "this is not a PDF" — that misdirected
+ * a whole production investigation once already.
+ */
+export function classifyExtractionError(cause: unknown): ExtractionFailure {
+  const record =
+    typeof cause === "object" && cause !== null
+      ? (cause as { name?: unknown; code?: unknown; message?: unknown })
+      : {};
+  const name = typeof record.name === "string" ? record.name : "";
+  const code = typeof record.code === "string" ? record.code : "";
+  const message =
+    cause instanceof Error
+      ? cause.message
+      : typeof record.message === "string"
+        ? record.message
+        : "";
+
+  // pdfjs's own exception types are the most reliable signal about the file.
+  if (name === "PasswordException") return "ENCRYPTED";
+  if (name === "InvalidPDFException" || name === "FormatError") return "MALFORMED";
+
+  // Environment and bootstrap failures: the parser could not run at all, so
+  // the file was never really examined.
+  if (
+    name === "ReferenceError" ||
+    code === "ERR_MODULE_NOT_FOUND" ||
+    code === "MODULE_NOT_FOUND" ||
+    /fake worker|cannot find module|worker|is not defined|dynamic import|failed to load|DOMMatrix|Path2D|ImageData|canvas/i.test(
+      message,
+    )
+  ) {
+    return "RUNTIME";
+  }
+
+  // Message-only fallbacks, after the typed checks above.
+  if (/no password given|incorrect password/i.test(message)) return "ENCRYPTED";
+  if (/invalid pdf structure|invalid pdf/i.test(message)) return "MALFORMED";
+
+  // Anything else stays UNKNOWN — and UNKNOWN is answered as a server
+  // problem, never as a bad file.
+  return "UNKNOWN";
+}
 
 export interface ExtractedDocument {
   /** Stable id derived from the file name and content. */
@@ -113,6 +177,18 @@ export async function extractPdfPages(
   const id = documentIdFor(fileName, data, scope);
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
 
+  // Point pdfjs at the worker explicitly. Left to itself it derives a path
+  // from its own module URL, which is fragile in a traced serverless bundle;
+  // resolving through the module system fails loudly and traceably instead.
+  try {
+    const require = createRequire(import.meta.url);
+    pdfjs.GlobalWorkerOptions.workerSrc = require.resolve(
+      "pdfjs-dist/legacy/build/pdf.worker.mjs",
+    );
+  } catch {
+    // Fall back to pdfjs's own resolution rather than failing outright.
+  }
+
   const task = pdfjs.getDocument({
     data,
     useWorkerFetch: false,
@@ -122,7 +198,17 @@ export async function extractPdfPages(
   });
 
   try {
-    const doc = await task.promise;
+    let doc;
+    try {
+      doc = await task.promise;
+    } catch (cause) {
+      throw new PdfExtractionError(
+        classifyExtractionError(cause),
+        cause instanceof Error ? cause.message : String(cause),
+        cause,
+      );
+    }
+
     const pages: Page[] = [];
     // 1-indexed, ascending: page order is part of the contract.
     for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
