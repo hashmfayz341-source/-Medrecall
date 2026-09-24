@@ -3,6 +3,7 @@ import { pathologyCurriculum } from "@/lib/content/pathology";
 import { getConcept, getItem } from "@/lib/engine/tutor";
 import { gradeAnswer, type GradeResult } from "@/lib/grading";
 import { toGradeRequest } from "@/lib/grading/request";
+import { composeRemediation } from "@/lib/grading/remediation";
 import { DeterministicProvider, type AiProvider } from "@/lib/ai";
 import { CORRECT_ATP, WRONG } from "./helpers";
 
@@ -12,11 +13,11 @@ import { CORRECT_ATP, WRONG } from "./helpers";
  */
 
 const inject = vi.hoisted(() => ({ provider: null as unknown }));
-vi.mock("@/lib/ai", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/ai")>();
+vi.mock("@/lib/ai/gradingProvider", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/ai/gradingProvider")>();
   return {
     ...actual,
-    getProvider: () => (inject.provider as AiProvider | null) ?? actual.getProvider(),
+    getGradingProvider: () => (inject.provider as AiProvider | null) ?? actual.getGradingProvider(),
   };
 });
 
@@ -45,13 +46,8 @@ function provider(overrides: Record<string, unknown>): AiProvider {
 }
 
 /** The remediation the reviewed material alone produces for this item. */
-async function expectedRemediation(g: GradeResult, answer: string) {
-  return new DeterministicProvider().generateRemediation({
-    concept: ATP,
-    item: ATP1,
-    grade: g,
-    learnerAnswer: answer,
-  });
+async function expectedRemediation(g: GradeResult) {
+  return composeRemediation({ concept: ATP, item: ATP1, grade: g });
 }
 
 afterEach(() => {
@@ -110,7 +106,7 @@ describe("M1: remediation is assembled from reviewed material, never provider pr
     const { status, body } = await grade(WRONG);
     expect(status).toBe(200);
     expect(JSON.stringify(body)).not.toContain(INVENTED);
-    expect(body.remediation).toBe(await expectedRemediation(gradeAnswer(ATP1, WRONG), WRONG));
+    expect(body.remediation).toBe(await expectedRemediation(gradeAnswer(ATP1, WRONG)));
     // The provider is not even asked to write remediation.
     expect(remediate).not.toHaveBeenCalled();
   });

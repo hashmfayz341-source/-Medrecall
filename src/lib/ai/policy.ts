@@ -1,7 +1,9 @@
-import type { AiProvider } from "./provider";
+import type { ProviderIdentity } from "./provider";
 
 /**
  * Preconditions for running a HOSTED (paid, third-party) provider.
+ *
+ * Applies to BOTH provider roles — grading and extraction — independently.
  *
  * Until curriculum is served from the server, POST /api/grade and
  * POST /api/ingest cannot know who is calling or whether a concept is really
@@ -35,7 +37,7 @@ export class ProviderNotPermittedError extends Error {
 }
 
 /** Return the provider if it may run here; throw otherwise. */
-export function assertProviderPermitted<P extends AiProvider>(
+export function assertProviderPermitted<P extends ProviderIdentity>(
   provider: P,
   safeguards: Readonly<HostedProviderSafeguards> = HOSTED_PROVIDER_SAFEGUARDS,
 ): P {

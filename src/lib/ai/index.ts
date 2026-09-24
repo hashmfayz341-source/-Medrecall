@@ -1,8 +1,10 @@
-import { DeterministicProvider } from "./deterministic";
-import { assertProviderPermitted } from "./policy";
-import type { AiProvider } from "./provider";
-
-export type { AiProvider, GradeFreeAnswerInput } from "./provider";
+export type {
+  AiProvider,
+  ExtractionProvider,
+  GradeFreeAnswerInput,
+  GradingProvider,
+  ProviderIdentity,
+} from "./provider";
 export { DeterministicProvider } from "./deterministic";
 export {
   HOSTED_PROVIDER_SAFEGUARDS,
@@ -10,21 +12,17 @@ export {
   assertProviderPermitted,
 } from "./policy";
 
-/**
- * Provider resolution.
+/*
+ * Provider resolution is split by ROLE, one resolver per route:
  *
- * Always the deterministic provider for now. When a hosted provider is added,
- * resolve it here from a SERVER-SIDE env var only — this module must never be
- * imported into a client component, and no key may be exposed through
- * NEXT_PUBLIC_*.
+ *   getGradingProvider()    — ./gradingProvider.ts    — POST /api/grade only
+ *   getExtractionProvider() — ./extractionProvider.ts — POST /api/ingest only
  *
- * Callers: POST /api/grade (the grading decision) and POST /api/ingest
- * (extraction). Adding a real model is an adapter implementing AiProvider plus
- * a binding here — the tutor engine, the route contracts and the UI do not
- * change. But a hosted provider is refused by `assertProviderPermitted()`
- * until the server-side abuse controls in ./policy.ts exist, so it cannot be
- * switched on by an env var alone.
+ * There is intentionally no single `getProvider()`: one resolver for both
+ * roles would let binding a hosted grader silently change PDF extraction.
+ * Routes import their resolver module directly, not this barrel.
+ *
+ * Server-only: nothing under lib/ai may be imported into a client component.
  */
-export function getProvider(): AiProvider {
-  return assertProviderPermitted(new DeterministicProvider());
-}
+export { getGradingProvider } from "./gradingProvider";
+export { getExtractionProvider } from "./extractionProvider";

@@ -91,6 +91,24 @@ describe("providers never reach the browser", () => {
     expect([...reachable(join(ROOT, route))].some((f) => f.startsWith(AI_DIR))).toBe(true);
   });
 
+  it("grading and extraction resolve through separate, non-overlapping resolvers", () => {
+    const GRADING = join(AI_DIR, "gradingProvider.ts");
+    const EXTRACTION = join(AI_DIR, "extractionProvider.ts");
+    const BARREL = join(AI_DIR, "index.ts");
+    const gradeGraph = reachable(join(ROOT, "src/app/api/grade/route.ts"));
+    const ingestGraph = reachable(join(ROOT, "src/app/api/ingest/route.ts"));
+
+    expect(gradeGraph.has(GRADING)).toBe(true);
+    expect(gradeGraph.has(EXTRACTION)).toBe(false);
+    expect(ingestGraph.has(EXTRACTION)).toBe(true);
+    expect(ingestGraph.has(GRADING)).toBe(false);
+    // Neither route goes through the barrel that exposes both resolvers.
+    expect(gradeGraph.has(BARREL)).toBe(false);
+    expect(ingestGraph.has(BARREL)).toBe(false);
+    // Ingestion never reaches the grading service either.
+    expect(ingestGraph.has(join(AI_DIR, "grade.ts"))).toBe(false);
+  });
+
   it("no source file reads a NEXT_PUBLIC_ variable", () => {
     for (const file of FILES) {
       expect(readFileSync(file, "utf8"), file).not.toMatch(/process\.env\.NEXT_PUBLIC_/);

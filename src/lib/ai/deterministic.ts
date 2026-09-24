@@ -14,9 +14,10 @@ import type {
 /**
  * The deterministic provider: authored behaviour, no API key, no network.
  *
- * It implements the same interface a model-backed provider will, so swapping
- * one in later is a single binding change in `getProvider()` — and this
- * implementation stays as the offline fallback and the test oracle.
+ * It fills BOTH provider roles today, each through its own resolver
+ * (`getGradingProvider()`, `getExtractionProvider()`). A hosted model can
+ * later replace one role without touching the other, and this implementation
+ * stays as the offline fallback and the test oracle.
  */
 export class DeterministicProvider implements AiProvider {
   readonly name = "deterministic";
@@ -57,9 +58,10 @@ export class DeterministicProvider implements AiProvider {
   }
 
   /**
-   * The reviewed-material remediation text. Not part of AiProvider: remediation
-   * is never provider-written. Kept on this class for existing callers; it is
-   * exactly `composeRemediation()`.
+   * @deprecated Compatibility alias for `composeRemediation()`, kept only so
+   * pre-Stage-A tests keep compiling. This is NOT a provider hook: it is not
+   * part of any provider interface, the grading service never calls it, and
+   * no provider writes remediation. Use `composeRemediation()` directly.
    */
   async generateRemediation(input: {
     concept: GradingConcept;

@@ -10,7 +10,7 @@ import {
   quotesSourceExcerpt,
   restrictToReviewedTerms,
 } from "@/lib/grading/remediation";
-import type { AiProvider } from "./provider";
+import type { GradingProvider } from "./provider";
 
 export type { GradingFailure };
 
@@ -58,7 +58,7 @@ async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
 }
 
 export async function gradeWithProvider(
-  provider: AiProvider,
+  provider: GradingProvider,
   request: GradeRequest,
   options: { timeoutMs?: number } = {},
 ): Promise<GradingOutcome> {

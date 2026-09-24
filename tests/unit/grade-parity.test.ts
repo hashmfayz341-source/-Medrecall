@@ -18,7 +18,7 @@ import { scheduleAfterAttempt } from "@/lib/engine/scheduler";
 import { gradeAnswer } from "@/lib/grading";
 import { requestGrade } from "@/lib/grading/client";
 import { submitAnswer } from "@/lib/session/submitAnswer";
-import { DeterministicProvider } from "@/lib/ai";
+import { composeRemediation } from "@/lib/grading/remediation";
 import { extractPdfPages } from "@/lib/ingestion/pdf";
 import { buildChunks, generateCandidates, toSourceDocument } from "@/lib/ingestion/extractor";
 import {
@@ -108,7 +108,6 @@ function legacyRecordAttempt(
 const viaRoute: typeof fetch = async (url, init) =>
   POST(new Request(new URL(String(url), "http://localhost"), init as RequestInit));
 
-const provider = new DeterministicProvider();
 let comparedSteps = 0;
 
 /** Run one attempt through both paths from the same state and demand equality. */
@@ -156,11 +155,12 @@ async function attemptBoth(
   // Remediation text: what the browser used to compute locally, now from the
   // server, shown in exactly the same cases.
   if (!legacy.grade.correct) {
-    const local = await provider.generateRemediation({
+    // Pre-boundary production computed this in the browser; it is now the
+    // deterministic composer, run on the server.
+    const local = composeRemediation({
       concept: legacy.concept,
       item: legacy.item,
       grade: legacy.grade,
-      learnerAnswer: input.answer,
     });
     expect(boundary.remediation, label).toBe(local);
   } else {

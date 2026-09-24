@@ -18,8 +18,9 @@ lib/grading/            Deterministic grading, grade validation, /api/grade wire
 lib/ingestion/          PDF text extraction + candidate concept generation
 lib/persistence/        Repository interfaces + implementations
 lib/content/            Authored curriculum data
-lib/ai/                 SERVER ONLY. Provider interface, deterministic provider,
-                        grading service used by /api/grade, hosted-provider policy
+lib/ai/                 SERVER ONLY. Provider roles (GradingProvider,
+                        ExtractionProvider), one resolver per role, deterministic
+                        provider, grading service for /api/grade, hosted policy
 ```
 
 Dependencies point inward. `lib/domain` imports nothing from the outer layers.
@@ -198,14 +199,16 @@ regression oracle.
 
 ## AD-10 — Provider-agnostic AI interface, keys server-side
 
-**Decision.** `AiProvider` declares `hosted`, `extractConcepts`,
-`generateTeachingExplanation`, `generateRetrievalItems` and
-`gradeFreeAnswer({ concept, item, answer })`. `DeterministicProvider`
-implements it with authored content. No vendor SDK is imported anywhere.
-(`generateRemediation` was removed from the interface in Milestone 3 Stage A:
-see AD-21.)
+**Decision.** Providers are split by role. `GradingProvider` has
+`gradeFreeAnswer({ concept, item, answer })`. `ExtractionProvider` has
+`extractConcepts`. Both declare `name` and `hosted`. `AiProvider` is the full
+surface `DeterministicProvider` implements with authored content (both roles
+plus `generateTeachingExplanation` and `generateRetrievalItems`). Each role is
+resolved separately (AD-23). No vendor SDK is imported anywhere. Providers
+write no remediation (AD-21).
 
-**Reason.** Vendor choice should be an adapter plus a binding, gated by AD-22. Extraction must always
+**Reason.** Vendor choice should be an adapter plus a binding for one role,
+gated by AD-22. Extraction must always
 return DRAFT concepts with a populated `SourceRef`, whoever implements it.
 
 **Tradeoff.** The interface is guessed ahead of a real model integration and
@@ -377,8 +380,8 @@ failure mode is invisible in unit tests.
 state are two separate steps, owned by two separate parties.
 
 - **The provider decides the assessment, and only the assessment.**
-  `POST /api/grade` calls `getProvider().gradeFreeAnswer({ concept, item,
-  answer })` server-side. The provider receives the approved concept's
+  `POST /api/grade` calls `getGradingProvider().gradeFreeAnswer({ concept,
+  item, answer })` server-side. It uses the grading resolver only (AD-23). The provider receives the approved concept's
   identity, wording and verbatim `SourceRef` excerpt, the retrieval item with
   its reviewed rubric, and the answer, so a future model can grade against the
   source without another interface change. It returns an outcome and the
@@ -467,9 +470,10 @@ the learner's own browser, nor stop a direct caller. The first is no weaker
 than before, because the learner already owns their local state. The second
 is harmless while the provider is free (AD-22).
 
-**Future implication.** A real model is an adapter implementing
-`gradeFreeAnswer` plus a `getProvider()` binding, and it is refused until the
-AD-22 safeguards exist. The tutor engine, `submitAnswer`, the UI and the
+**Future implication.** A real model grader is an adapter implementing
+`GradingProvider.gradeFreeAnswer` plus a `getGradingProvider()` binding. It is
+refused until the AD-22 safeguards exist, and binding it cannot affect
+extraction (AD-23). The tutor engine, `submitAnswer`, the UI and the
 response contract do not change. Stage B adds the PARTIAL mastery policy and
 disagreement logging. `tests/unit/grade-parity.test.ts` must keep passing for
 the deterministic provider.
@@ -558,10 +562,10 @@ better. Richer re-teaching waits for a grounding contract.
 ## AD-22 — No paid hosted provider without server-side abuse control
 
 **Decision.** `AiProvider.hosted` declares whether a provider costs money or
-reaches a third party. `getProvider()` always returns through
-`assertProviderPermitted()` (`lib/ai/policy.ts`), which refuses any provider
+reaches a third party. Both role resolvers, `getGradingProvider()` and
+`getExtractionProvider()`, always return through `assertProviderPermitted()` (`lib/ai/policy.ts`), which refuses any provider
 that is not explicitly `hosted: false` unless every
-`HOSTED_PROVIDER_SAFEGUARDS` flag is true. The only flag, `abuseControl`, is
+`HOSTED_PROVIDER_SAFEGUARDS` flag is true, for each role independently. The only flag, `abuseControl`, is
 false and frozen, because none exists: no authentication, rate limiting or
 spend quota on `/api/grade` or `/api/ingest`.
 
@@ -593,3 +597,39 @@ new review after migration persists normally. The Concept model is unchanged.
 Human edits rebuild retrieval prompts, answers and feedback from the reviewed
 wording while retaining the immutable SourceRef. Failed storage writes produce a
 visible warning, and other-tab status changes refresh the learning gate.
+
+---
+
+## AD-23 — One provider resolver per role: grading and extraction are decoupled
+
+**Decision.** There is no single `getProvider()`. Each role has its own
+resolver in its own module:
+
+| Role | Resolver | Module | Sole caller |
+|---|---|---|---|
+| Grading | `getGradingProvider(): GradingProvider` | `lib/ai/gradingProvider.ts` | `POST /api/grade` |
+| Extraction | `getExtractionProvider(): ExtractionProvider` | `lib/ai/extractionProvider.ts` | `POST /api/ingest` |
+
+Both currently return `DeterministicProvider`, through the AD-22 tripwire.
+Routes import their resolver module directly, never the `lib/ai` barrel. The
+resolver modules do not import each other, and any future configuration for a
+role is read in that role's module only.
+
+**Reason.** Stage B introduces a hosted model **grader** only. With one shared
+resolver, binding it would have changed Milestone 2 PDF extraction too, made
+uploads call a paid model, and forced the grading adapter to implement
+extraction. Each of those is a separate decision that deserves its own
+review.
+
+**Enforcement.** `tests/unit/provider-separation.test.ts` checks that each
+route calls only its own resolver, that substituting one role leaves the
+other's output byte-identical, that a hosted grader stand-in is never used for
+extraction, and that a grading-only provider type-checks without
+`extractConcepts`. `tests/unit/client-boundary.test.ts` walks the import graph:
+the grade route reaches the grading resolver and not the extraction one, and
+vice versa, and neither route reaches the barrel. A mutation that routed
+ingestion through the grading resolver failed five of these tests.
+
+**Future implication.** Changing extraction to a model is its own Stage, with
+its own resolver change, safeguards and review.
+

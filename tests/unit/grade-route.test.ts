@@ -11,7 +11,7 @@ import {
 } from "@/lib/grading/request";
 import { GRADE_ERRORS } from "@/lib/grading/errors";
 import { gradeWithProvider } from "@/lib/ai/grade";
-import { quotesSourceExcerpt } from "@/lib/grading/remediation";
+import { composeRemediation, quotesSourceExcerpt } from "@/lib/grading/remediation";
 import { DeterministicProvider, type AiProvider, type GradeFreeAnswerInput } from "@/lib/ai";
 import type { Concept } from "@/lib/domain/types";
 import { applyOverrides, createOverrides, editConcept } from "@/lib/domain/curriculum";
@@ -27,17 +27,17 @@ import { ANSWERS, CORRECT_ATP, WRONG } from "./helpers";
 // Lets a test swap in a misbehaving provider for one request.
 const inject = vi.hoisted(() => ({ provider: null as unknown }));
 
-vi.mock("@/lib/ai", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/ai")>();
+vi.mock("@/lib/ai/gradingProvider", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/ai/gradingProvider")>();
   return {
     ...actual,
-    getProvider: () => {
+    getGradingProvider: () => {
       if (inject.provider) {
         const p = inject.provider;
         inject.provider = null;
         return p;
       }
-      return actual.getProvider();
+      return actual.getGradingProvider();
     },
   };
 });
@@ -106,11 +106,10 @@ describe("successful grading", () => {
     expect(remediation).toContain(`page ${ATP.source.pageNumber}`);
     expect(remediation).toContain(ATP1.explanation);
     // Byte-identical to what the browser used to compute locally.
-    const local = await new DeterministicProvider().generateRemediation({
+    const local = composeRemediation({
       concept: ATP,
       item: ATP1,
       grade: gradeAnswer(ATP1, WRONG),
-      learnerAnswer: WRONG,
     });
     expect(remediation).toBe(local);
     assertNoDisclosure(text);

@@ -86,9 +86,15 @@ tripwire, not grounding. Never use it to admit model prose.
 
 **13. The server cannot verify ACTIVE yet, so no paid provider (AD-22).** The
 route's status check validates client-supplied state and is not authoritative.
-The domain/engine gate in the app stays mandatory. `getProvider()` refuses any
-hosted provider until server-side abuse control exists. Build that first. It
+The domain/engine gate in the app stays mandatory. Both role resolvers refuse
+any hosted provider until server-side abuse control exists. Build that first. It
 is a Stage B prerequisite.
+
+**14. One resolver per provider role (AD-23).** `/api/grade` uses
+`getGradingProvider()` and `/api/ingest` uses `getExtractionProvider()`, each
+imported from its own module. Never reintroduce a shared `getProvider()`, and
+never have one role's resolver read another's configuration. Binding a hosted
+grader must not change extraction.
 
 ## How the session loop works
 
@@ -140,9 +146,12 @@ stable across later weakness; newly approved, unattempted concepts reopen their 
 **A real AI provider** — first build server-side abuse control
 (authentication, rate limiting and a spend quota, or equivalent) and set
 `HOSTED_PROVIDER_SAFEGUARDS.abuseControl` in that same change. Until then
-`getProvider()` refuses any `hosted` provider (AD-22). Then implement
-`AiProvider` in `src/lib/ai/` with `hosted: true` and bind it in
-`getProvider()` from a server-side env var. `extractConcepts()` must return
+the role resolvers refuse any `hosted` provider (AD-22). Then implement the
+ROLE you are changing. A model grader implements `GradingProvider` only, with
+`hosted: true`, bound in `getGradingProvider()` (`lib/ai/gradingProvider.ts`)
+from a server-side env var. That must not touch `getExtractionProvider()`
+(AD-23). An extraction model is a separate change in
+`lib/ai/extractionProvider.ts`, and `extractConcepts()` must return
 `status: "DRAFT"` with a populated `SourceRef`. `gradeFreeAnswer({ concept,
 item, answer })` must return a `GradeResult` whose `correct` matches its
 `outcome`, and whose matched and missing terms come from the item's rubric;
@@ -168,7 +177,7 @@ above that interface knows where state lives.
 npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
 ```
 
-346 unit tests, 78 E2E tests (39 per project, iPad and desktop viewports). The E2E suite
+355 unit tests, 78 E2E tests (39 per project, iPad and desktop viewports). The E2E suite
 drives the real UI through the complete demo journey, including the deliberate
 ATP-depletion failure.
 
@@ -238,14 +247,16 @@ as a patch; do not assume a PR exists or has been merged.
 
 Answer grading and remediation moved behind `POST /api/grade`, and the engine
 was split so that grading and state mutation are separate (AD-19). User-visible
-behaviour is unchanged: `getProvider()` still returns `DeterministicProvider`.
+behaviour is unchanged: `getGradingProvider()` and `getExtractionProvider()`
+both return `DeterministicProvider`.
 `tests/unit/grade-parity.test.ts` runs every step of several full journeys,
 plus every item × context × answer shape, through both the pre-boundary
 `recordAttempt` (copied verbatim from main at 0c3f502) and the new
 route-backed flow, and demands identical learner state at every step.
 
 New tests: `grade-route`, `grade-atomicity`, `grade-parity`, `client-boundary`,
-`grade-stale`, `grade-provider-contract`, `provider-policy` (unit), and
+`grade-stale`, `grade-provider-contract`, `provider-policy`,
+`provider-separation` (unit), and
 `tests/e2e/grading-boundary.spec.ts`, including a two-tab race.
 
 Review repairs made within Stage A:
@@ -256,6 +267,10 @@ Review repairs made within Stage A:
   (AD-21).
 - **M2:** the route's ACTIVE check is documented as non-authoritative, and
   hosted providers are refused until abuse control exists (AD-22).
+- **H3:** grading and extraction providers are resolved separately, so a
+  hosted grader cannot change ingestion (AD-23).
+- **L1:** route and doc wording corrected. Providers decide the grade only, and
+  remediation is composed from reviewed material.
 
 Not in Stage A: any hosted model or API key, the PARTIAL mastery policy,
 disagreement logging, model-written medical content, extraction changes,

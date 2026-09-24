@@ -5,7 +5,8 @@ import {
   HOSTED_PROVIDER_SAFEGUARDS,
   ProviderNotPermittedError,
   assertProviderPermitted,
-  getProvider,
+  getExtractionProvider,
+  getGradingProvider,
   type AiProvider,
 } from "@/lib/ai";
 
@@ -29,10 +30,11 @@ function hosted(overrides: Partial<AiProvider> = {}): AiProvider {
 }
 
 describe("hosted provider tripwire", () => {
-  it("the active provider is local", () => {
-    const provider = getProvider();
-    expect(provider.name).toBe("deterministic");
-    expect(provider.hosted).toBe(false);
+  it("both active providers are local", () => {
+    for (const provider of [getGradingProvider(), getExtractionProvider()]) {
+      expect(provider.name).toBe("deterministic");
+      expect(provider.hosted).toBe(false);
+    }
   });
 
   it("no abuse control exists yet, and the flag cannot be flipped at runtime", () => {
@@ -59,13 +61,18 @@ describe("hosted provider tripwire", () => {
     expect(assertProviderPermitted(hosted(), { abuseControl: true }).name).toBe("hosted-stand-in");
   });
 
-  it("getProvider() always passes through the tripwire", () => {
-    const source = readFileSync("src/lib/ai/index.ts", "utf8");
-    const body = source.slice(source.indexOf("export function getProvider"));
-    const returns = [...body.matchAll(/return\s+([^;]+);/g)].map((m) => m[1]!);
-    expect(returns.length).toBeGreaterThan(0);
-    for (const expression of returns) {
-      expect(expression.trim().startsWith("assertProviderPermitted(")).toBe(true);
+  it("both resolvers always pass through the tripwire", () => {
+    for (const [file, fn] of [
+      ["src/lib/ai/gradingProvider.ts", "getGradingProvider"],
+      ["src/lib/ai/extractionProvider.ts", "getExtractionProvider"],
+    ] as const) {
+      const source = readFileSync(file, "utf8");
+      const body = source.slice(source.indexOf(`export function ${fn}`));
+      const returns = [...body.matchAll(/return\s+([^;]+);/g)].map((m) => m[1]!);
+      expect(returns.length, file).toBeGreaterThan(0);
+      for (const expression of returns) {
+        expect(expression.trim().startsWith("assertProviderPermitted("), file).toBe(true);
+      }
     }
   });
 });

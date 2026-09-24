@@ -51,8 +51,9 @@ A complete tutor running with no AI key.
 
 ### Stage A — server-side grading boundary (implemented, awaiting review)
 
-- [x] Grading and remediation run server-side behind `POST /api/grade`, not in
-      the browser (AD-19)
+- [x] Grading runs server-side behind `POST /api/grade`, not in the browser.
+      Remediation is composed on the server from reviewed material (AD-19,
+      AD-21)
 - [x] Engine split: pure `recordGradedAttempt()` applies an already-computed
       grade; `recordAttempt()` kept as the deterministic wrapper
 - [x] `GradeOutcome` (`INCORRECT | PARTIAL | CORRECT`) with `correct` kept for
@@ -69,8 +70,11 @@ A complete tutor running with no AI key.
       verbatim source excerpt
 - [x] Remediation composed from reviewed material only, never provider prose
       (AD-21)
-- [x] Hosted providers refused by `getProvider()` until abuse control exists
-      (AD-22)
+- [x] Hosted providers refused by both role resolvers until abuse control
+      exists (AD-22)
+- [x] Grading and extraction providers resolved separately
+      (`getGradingProvider()`, `getExtractionProvider()`), so a hosted grader
+      cannot change ingestion (AD-23)
 
 ### Stage B prerequisites (must land before any hosted provider)
 
@@ -83,8 +87,9 @@ A complete tutor running with no AI key.
 
 ### Later stages
 
-- [ ] A hosted model provider, as an adapter behind `getProvider()` (after the
-      prerequisite above)
+- [ ] A hosted model **grader**, as a `GradingProvider` adapter behind
+      `getGradingProvider()` only (after the prerequisite above). Extraction
+      stays deterministic unless changed in its own reviewed stage.
 - [ ] PARTIAL mastery policy (partial credit feeding a finer mastery signal)
 - [ ] Richer remediation beyond reviewed material. This needs a structured
       grounding contract first. Checking that text "contains the excerpt" is

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getProvider } from "@/lib/ai";
+import { getGradingProvider } from "@/lib/ai/gradingProvider";
 import { gradeWithProvider } from "@/lib/ai/grade";
 import { GRADE_REQUEST_LIMITS, parseGradeRequest } from "@/lib/grading/request";
 import {
@@ -11,13 +11,23 @@ import {
 /**
  * POST /api/grade — the grading boundary.
  *
- * The browser sends one attempt; the server runs the AI provider and returns
- * a validated assessment. The provider decides the verdict and the
- * re-teaching text. It never sees, and this route never returns, learner
- * state: applying the grade to mastery and FSRS is the deterministic engine's
- * job, done by the caller only after this responds successfully.
+ * The browser sends one attempt; the server runs the GRADING provider
+ * (`getGradingProvider()`, never the extraction resolver) and returns a
+ * validated assessment.
  *
- * Provider keys (when a hosted provider exists) stay here, server-side.
+ * The provider decides the assessment ONLY: the outcome and which of the
+ * item's own rubric terms were matched or missed. It writes no learner-facing
+ * text. Remediation is composed deterministically on the server from the
+ * item's reviewed explanation, the approved source excerpt and reviewed rubric
+ * terms (`composeRemediation`, AD-21).
+ *
+ * Nothing here sees, and this route never returns, learner state: applying the
+ * grade to mastery and FSRS is the deterministic engine's job, done by the
+ * caller only after this responds successfully (and only if the attempt is not
+ * stale, AD-20). The ACTIVE check below validates client-supplied curriculum
+ * and is not authoritative until curriculum is server-side (AD-19, AD-22).
+ *
+ * Provider keys (when a hosted grader exists) stay here, server-side.
  */
 
 export const dynamic = "force-dynamic";
@@ -56,7 +66,7 @@ export async function POST(request: Request) {
 
   let outcome;
   try {
-    outcome = await gradeWithProvider(getProvider(), parsed.value);
+    outcome = await gradeWithProvider(getGradingProvider(), parsed.value);
   } catch (cause) {
     console.error(
       `[grade] unexpected failure concept=${concept.id} item=${item.id}`,
