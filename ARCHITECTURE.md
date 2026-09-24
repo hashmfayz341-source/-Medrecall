@@ -8,17 +8,22 @@ and the **future implication**.
 ```
 app/ components/        React, Next.js — rendering and state wiring only
         ↓ calls
+lib/session/            One learner submission: gate → server grade → engine
+        ↓ calls
 lib/engine/             Tutor orchestration, priority, FSRS scheduling
         ↓ calls
 lib/domain/             Pure types, approval gate, mastery rules  (no imports out)
-lib/grading/            Deterministic grading (pure)
+lib/grading/            Deterministic grading, grade validation, /api/grade wire contract
 lib/ingestion/          PDF text extraction + candidate concept generation
 lib/persistence/        Repository interfaces + implementations
 lib/content/            Authored curriculum data
-lib/ai/                 Provider-agnostic interface + deterministic implementation
+lib/ai/                 SERVER ONLY. Provider interface, deterministic provider,
+                        grading service used by /api/grade
 ```
 
 Dependencies point inward. `lib/domain` imports nothing from the outer layers.
+No client component reaches `lib/ai`, directly or transitively;
+`tests/unit/client-boundary.test.ts` walks the import graph to enforce it.
 
 ---
 
@@ -204,7 +209,8 @@ return DRAFT concepts with a populated `SourceRef`, whoever implements it.
 will need revision (streaming, token budgets, partial failure).
 
 **Future implication.** Any hosted provider must run inside a route handler or
-server action. No key may ever be exposed through `NEXT_PUBLIC_*`.
+server action. No key may ever be exposed through `NEXT_PUBLIC_*`. As of AD-19
+grading and remediation run only behind `POST /api/grade`.
 
 ---
 
@@ -360,6 +366,93 @@ in the deployment's `node_modules`.
 treatment. It is also why the E2E suite runs against a production build: this
 failure mode is invisible in unit tests.
 
+---
+
+## AD-19 — GRADING DECISION ≠ STATE MUTATION (Milestone 3, Stage A)
+
+**Decision.** Assessing an answer and applying that assessment to learner
+state are two separate steps, owned by two separate parties.
+
+- **The provider decides the assessment.** `POST /api/grade` runs
+  `getProvider().gradeFreeAnswer()` server-side and, when the answer is not
+  fully correct, `generateRemediation()`. It returns a small validated
+  `{ provider, conceptId, itemId, grade, remediation }` and nothing else. It
+  never sees, and cannot write, learner state.
+- **The deterministic engine decides what that assessment does.**
+  `recordGradedAttempt(curriculum, learner, input, grade)` in
+  `lib/engine/tutor.ts` is pure. It re-checks the approval gate and that the
+  item belongs to the concept, validates the grade, then applies mastery, FSRS,
+  interleaving bookkeeping and completion atomically. It never calls a
+  provider or the network, and it never re-grades.
+
+The learner flow is:
+
+```
+submit → gate check in browser → POST /api/grade → provider grades (server)
+       → reply validated in browser → recordGradedAttempt → persist → feedback
+```
+
+`recordAttempt()` survives as a deterministic compatibility wrapper
+(`gradeAnswer` → `recordGradedAttempt`). It is the parity oracle and serves
+internal callers and tests. The learner's path no longer uses it.
+
+**Grade outcomes.** `GradeResult.outcome` is `INCORRECT | PARTIAL | CORRECT`.
+`correct` stays for compatibility and is true **only** for `CORRECT`. A grade
+whose `correct` flag disagrees with its outcome is rejected at every boundary:
+provider → route, route → browser, and browser → engine. That stops a malformed
+PARTIAL from ever being credited. The deterministic grader emits only
+`INCORRECT`/`CORRECT`. **PARTIAL has no mastery policy yet.** Until Stage B
+defines one, the engine treats it exactly like INCORRECT, and a test pins this
+so the change has to be deliberate. There is no mastery percentage (AD-3).
+
+**Request contract** (`lib/grading/request.ts`). Curriculum is still
+browser-local, so the browser sends the narrow slice needed to grade one
+attempt: the concept's identity, title, summary, status and `SourceRef`, the
+one retrieval item, and the answer. Unknown keys are rejected at every level,
+so a client cannot supply a prompt, instructions, model or provider options.
+The route rejects:
+non-ACTIVE concepts (422), an item whose `conceptId` is not the concept (400),
+a missing or empty source excerpt or cross-lecture provenance (400), an empty
+answer (400), an answer over 4,000 characters (413), and bodies over 256 KB
+(413). Error bodies are `{ code, error, retryable }` with fixed strings. The
+browser shows messages by code from its own table.
+
+**Provider output is untrusted.** `lib/ai/grade.ts` enforces a timeout
+(12 s per provider call, so grade + remediation fit the route's 30 s budget), validates and strips the grade to its known fields, and fails the
+whole request if the remediation text is missing, oversized, or does not quote
+the concept's verbatim source excerpt. A failed remediation never degrades
+into a bare grade. Every provider failure is a neutral, retryable 502/504 with
+no exception text, stack, path, prompt or raw provider response.
+
+**Atomicity.** `lib/session/submitAnswer.ts` calls the engine only after a
+validated grade exists, and applies it to the state that is current when the
+reply arrives, re-checking the gate. A concept un-approved mid-flight is
+refused. Any failure returns the learner state untouched. A failed grading
+request is not a failed retrieval attempt: no attempt counter, no WEAK, no
+FSRS lapse, no interleaving bookkeeping. A single-flight guard plus a
+disabled button stop a double tap from recording two attempts.
+
+**Reason.** A model call can fail, time out, return malformed output, or
+disagree with the deterministic grader. When grading and mutation were fused
+in one synchronous client function, none of that could be handled without
+risking a partially applied attempt. Separating them also makes the learning
+rules (AD-4, AD-5) independent of who graded. A lenient model cannot clear
+WEAK from an immediate-remediation answer, because that rule lives in the
+engine, not the grader.
+
+**Tradeoff.** Grading now needs a network round trip, so offline use of the
+learning loop is lost. While curriculum stays browser-local, the server grades
+against the rubric the browser sends. The boundary protects learner state and
+provider keys, but it does not make grading tamper-proof against the learner's
+own browser. That is no weaker than before, because the learner already owns
+their local state. It closes once curriculum is served from the server
+(Milestone 4).
+
+**Future implication.** A real model is an adapter plus a `getProvider()`
+binding. The tutor engine, `submitAnswer`, the UI and the response contract do
+not change. Stage B adds the PARTIAL mastery policy and disagreement logging.
+`tests/unit/grade-parity.test.ts` must keep passing for the deterministic
+provider.
 
 ## M2 audit corrections
 

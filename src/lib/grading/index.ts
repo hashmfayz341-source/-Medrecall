@@ -15,7 +15,24 @@ import type { RetrievalItem } from "@/lib/domain/types";
  * a model-graded path, but this stays the fallback and the test oracle.
  */
 
+/**
+ * The assessment verdict.
+ *
+ * PARTIAL exists so a model-backed grader can express "some of the mechanism,
+ * not all of it" without being forced into a binary. The deterministic grader
+ * never emits it, and the engine does not yet give it any credit: until the
+ * PARTIAL mastery policy lands, it is treated exactly like INCORRECT.
+ */
+export type GradeOutcome = "INCORRECT" | "PARTIAL" | "CORRECT";
+
+export const GRADE_OUTCOMES: readonly GradeOutcome[] = ["INCORRECT", "PARTIAL", "CORRECT"];
+
 export interface GradeResult {
+  outcome: GradeOutcome;
+  /**
+   * Compatibility view of `outcome`. True ONLY when outcome is "CORRECT" — a
+   * PARTIAL answer is never `correct`.
+   */
   correct: boolean;
   /** One representative matched term per satisfied keyword group. */
   matched: string[];
@@ -37,6 +54,7 @@ export function gradeAnswer(item: RetrievalItem, answer: string): GradeResult {
 
   if (normalized.length === 0) {
     return {
+      outcome: "INCORRECT",
       correct: false,
       matched: [],
       missing: item.requiredKeywords.map((group) => group[0] ?? ""),
@@ -48,6 +66,7 @@ export function gradeAnswer(item: RetrievalItem, answer: string): GradeResult {
   for (const accepted of item.acceptableAnswers) {
     if (normalized === normalize(accepted)) {
       return {
+        outcome: "CORRECT",
         correct: true,
         matched: [accepted],
         missing: [],
@@ -68,10 +87,69 @@ export function gradeAnswer(item: RetrievalItem, answer: string): GradeResult {
     }
   }
 
+  const correct = missing.length === 0 && item.requiredKeywords.length > 0;
   return {
-    correct: missing.length === 0 && item.requiredKeywords.length > 0,
+    outcome: correct ? "CORRECT" : "INCORRECT",
+    correct,
     matched,
     missing,
     normalizedAnswer: normalized,
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Validation                                                          */
+/* ------------------------------------------------------------------ */
+
+/** Bounds on a grade that crosses a trust boundary (provider or network). */
+export const GRADE_LIMITS = {
+  maxTerms: 100,
+  maxTermChars: 500,
+  maxNormalizedAnswerChars: 8_000,
+} as const;
+
+function isBoundedStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= GRADE_LIMITS.maxTerms &&
+    value.every((v) => typeof v === "string" && v.length <= GRADE_LIMITS.maxTermChars)
+  );
+}
+
+/**
+ * Structural check for a GradeResult that did not come from `gradeAnswer`
+ * in this process: a provider's output on the server, or the server's reply in
+ * the browser.
+ *
+ * It rejects anything the engine cannot safely act on — an unknown outcome,
+ * and above all a `correct` flag that disagrees with `outcome`, which would
+ * otherwise let a malformed PARTIAL be credited as a success.
+ */
+export function isValidGradeResult(value: unknown): value is GradeResult {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  if (typeof v.outcome !== "string" || !GRADE_OUTCOMES.includes(v.outcome as GradeOutcome)) {
+    return false;
+  }
+  if (typeof v.correct !== "boolean") return false;
+  if (v.correct !== (v.outcome === "CORRECT")) return false;
+  if (!isBoundedStringArray(v.matched) || !isBoundedStringArray(v.missing)) return false;
+  if (
+    typeof v.normalizedAnswer !== "string" ||
+    v.normalizedAnswer.length > GRADE_LIMITS.maxNormalizedAnswerChars
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/** Copy only the known GradeResult fields, dropping anything extra. */
+export function sanitizeGradeResult(grade: GradeResult): GradeResult {
+  return {
+    outcome: grade.outcome,
+    correct: grade.correct,
+    matched: [...grade.matched],
+    missing: [...grade.missing],
+    normalizedAnswer: grade.normalizedAnswer,
   };
 }

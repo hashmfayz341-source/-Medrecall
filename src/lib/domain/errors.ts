@@ -26,3 +26,28 @@ export class LectureLockedError extends Error {
     this.lectureId = lectureId;
   }
 }
+
+/**
+ * Raised when a grade handed to the engine is not something it can act on:
+ * wrong shape, unknown outcome, or a `correct` flag that contradicts the
+ * outcome. Thrown before any state is touched.
+ */
+export class InvalidGradeError extends Error {
+  constructor(reason: string) {
+    super(`Refusing to record an invalid grade: ${reason}`);
+    this.name = "InvalidGradeError";
+  }
+}
+
+/** Raised when a retrieval item does not belong to the concept it is asked for. */
+export class ItemConceptMismatchError extends Error {
+  readonly conceptId: string;
+  readonly itemId: string;
+
+  constructor(conceptId: string, itemId: string) {
+    super(`Retrieval item "${itemId}" does not belong to concept "${conceptId}"`);
+    this.name = "ItemConceptMismatchError";
+    this.conceptId = conceptId;
+    this.itemId = itemId;
+  }
+}

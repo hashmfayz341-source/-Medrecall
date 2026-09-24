@@ -1,7 +1,16 @@
 import { activeOnly, assertActive, isActive } from "@/lib/domain/gate";
-import { LectureLockedError } from "@/lib/domain/errors";
+import {
+  InvalidGradeError,
+  ItemConceptMismatchError,
+  LectureLockedError,
+} from "@/lib/domain/errors";
 import { applyRetrievalToMastery, createProgress } from "@/lib/domain/mastery";
-import { gradeAnswer, type GradeResult } from "@/lib/grading";
+import {
+  gradeAnswer,
+  isValidGradeResult,
+  sanitizeGradeResult,
+  type GradeResult,
+} from "@/lib/grading";
 import { isDue, newSchedule, scheduleAfterAttempt } from "./scheduler";
 import { scoreConcept } from "./priority";
 import type {
@@ -370,7 +379,8 @@ export type SessionStep =
  * The learner never chooses what to do next; this does.
  *
  * Pure: it reads state and returns the next step without mutating anything.
- * State only advances through `markChunkTaught` and `recordAttempt`.
+ * State only advances through `markChunkTaught` and `recordGradedAttempt`
+ * (or its deterministic wrapper `recordAttempt`).
  */
 export function getNextStep(
   curriculum: Curriculum,
@@ -516,6 +526,13 @@ export interface AttemptInput {
   now: Date;
 }
 
+/**
+ * Everything the engine needs to fold an ALREADY-GRADED attempt into state.
+ * The answer text is deliberately absent: by this point the assessment has
+ * been made, and the engine must not re-grade or second-guess it.
+ */
+export type GradedAttemptInput = Omit<AttemptInput, "answer">;
+
 export interface AttemptResult {
   learner: LearnerState;
   grade: GradeResult;
@@ -525,32 +542,69 @@ export interface AttemptResult {
 }
 
 /**
- * Grade one answer and fold the result into learner state: mastery, FSRS
- * schedule, interleaving bookkeeping and derived completion, in one step.
+ * Resolve the concept and item for an attempt, enforcing the approval gate
+ * and that the item really is a representation of that concept.
  */
-export function recordAttempt(
+export function resolveAttemptTarget(
   curriculum: Curriculum,
-  learner: LearnerState,
-  input: AttemptInput,
-): AttemptResult {
-  const concept = getConcept(curriculum, input.conceptId);
+  conceptId: string,
+  itemId: string,
+): { concept: Concept; item: RetrievalItem } {
+  const concept = getConcept(curriculum, conceptId);
 
   // The approval gate, enforced in the domain layer rather than the UI.
   assertActive(concept, "retrieval");
 
-  const item = getItem(concept, input.itemId);
-  const grade = gradeAnswer(item, input.answer);
+  const item = getItem(concept, itemId);
+  if (item.conceptId !== concept.id) {
+    throw new ItemConceptMismatchError(concept.id, item.id);
+  }
+  return { concept, item };
+}
+
+/**
+ * Fold one already-graded attempt into learner state: mastery, FSRS schedule,
+ * interleaving bookkeeping and derived completion, in one pure step.
+ *
+ * GRADING DECISION != STATE MUTATION. Whoever produced `grade` (the
+ * deterministic grader today, a model later) decided only the assessment. What
+ * that assessment does to mastery and scheduling is decided here, by the same
+ * deterministic rules regardless of who graded. This function never calls a
+ * provider or the network, and it validates the grade and the approval gate
+ * before touching anything — on any failure it throws and the caller's
+ * learner state is unchanged.
+ *
+ * PARTIAL is not yet given credit: until its mastery policy exists, only
+ * outcome "CORRECT" counts as a success.
+ */
+export function recordGradedAttempt(
+  curriculum: Curriculum,
+  learner: LearnerState,
+  input: GradedAttemptInput,
+  grade: GradeResult,
+): AttemptResult {
+  const { concept, item } = resolveAttemptTarget(
+    curriculum,
+    input.conceptId,
+    input.itemId,
+  );
+
+  if (!isValidGradeResult(grade)) {
+    throw new InvalidGradeError("grade failed structural validation");
+  }
+  const accepted = sanitizeGradeResult(grade);
+  const correct = accepted.outcome === "CORRECT";
 
   const before = ensureProgress(learner, concept.id, input.now);
   const afterMastery = applyRetrievalToMastery(before, {
-    correct: grade.correct,
+    correct,
     context: input.context,
     at: input.now.toISOString(),
   });
   const schedule = scheduleAfterAttempt(
     concept,
     before,
-    grade.correct,
+    correct,
     input.context,
     input.now,
   );
@@ -570,7 +624,37 @@ export function recordAttempt(
     injectedByChunk,
   });
 
-  return { learner: next, grade, progress, concept, item };
+  return { learner: next, grade: accepted, progress, concept, item };
+}
+
+/**
+ * Deterministic compatibility wrapper: grade locally with `gradeAnswer`, then
+ * fold the result in through `recordGradedAttempt`.
+ *
+ * The app no longer uses this on the learner's path — answers are graded by
+ * the server — but it is the oracle the server-boundary flow is tested
+ * against, and it keeps internal callers and regression tests working.
+ */
+export function recordAttempt(
+  curriculum: Curriculum,
+  learner: LearnerState,
+  input: AttemptInput,
+): AttemptResult {
+  // Gate before grading: a non-ACTIVE concept is never assessed at all.
+  const { item } = resolveAttemptTarget(curriculum, input.conceptId, input.itemId);
+  const grade = gradeAnswer(item, input.answer);
+  return recordGradedAttempt(
+    curriculum,
+    learner,
+    {
+      conceptId: input.conceptId,
+      itemId: input.itemId,
+      context: input.context,
+      chunkId: input.chunkId,
+      now: input.now,
+    },
+    grade,
+  );
 }
 
 /* ------------------------------------------------------------------ */

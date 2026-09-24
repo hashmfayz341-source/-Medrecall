@@ -47,12 +47,29 @@ A complete tutor running with no AI key.
 - OCR for scanned PDFs — rejected with an explicit message instead
 - Creating additional courses (lectures can be created; the course is fixed)
 
-## Milestone 3 — Model-graded free recall
+## Milestone 3 — Model-graded free recall (in progress)
 
-- [ ] `gradeFreeAnswer()` routed to a provider, server-side only
-- [ ] Deterministic grading retained as fallback and regression oracle
-- [ ] Partial-credit grading feeding a finer mastery signal
+### Stage A — server-side grading boundary (implemented, awaiting review)
+
+- [x] Grading and remediation run server-side behind `POST /api/grade`, not in
+      the browser (AD-19)
+- [x] Engine split: pure `recordGradedAttempt()` applies an already-computed
+      grade; `recordAttempt()` kept as the deterministic wrapper
+- [x] `GradeOutcome` (`INCORRECT | PARTIAL | CORRECT`) with `correct` kept for
+      compatibility and true only for `CORRECT`
+- [x] Narrow, strictly validated grading payload: no client-supplied prompts,
+      approval gate enforced at the boundary
+- [x] Failed or malformed grading causes zero learner mutation, and double
+      submits record one attempt
+- [x] Deterministic parity with the pre-boundary flow, tested step by step
+- [x] Deterministic grading retained as fallback and regression oracle
+
+### Later stages
+
+- [ ] A hosted model provider, as an adapter behind `getProvider()`
+- [ ] PARTIAL mastery policy (partial credit feeding a finer mastery signal)
 - [ ] Model-generated remediation grounded strictly in the source excerpt
+      (the boundary already rejects remediation that does not quote it)
 - [ ] Disagreement logging between deterministic and model grading
 
 ## Milestone 4 — Accounts and sync
