@@ -58,6 +58,18 @@ function isConceptProgress(value: unknown, conceptId: string): boolean {
   return isScheduleState(value.schedule);
 }
 
+const SELF_RATINGS = ["AGAIN", "HARD", "GOOD", "EASY"];
+
+function isCardProgress(value: unknown, itemId: string): boolean {
+  if (!isRecord(value)) return false;
+  if (value.itemId !== itemId) return false;
+  if (typeof value.conceptId !== "string" || value.conceptId.length === 0) return false;
+  if (!Number.isInteger(value.reviews) || (value.reviews as number) < 0) return false;
+  if (value.lastRating !== null && !SELF_RATINGS.includes(String(value.lastRating))) return false;
+  if (value.lastReviewedAt !== null && typeof value.lastReviewedAt !== "string") return false;
+  return isScheduleState(value.schedule);
+}
+
 /**
  * Validate stored learner state, dropping individual progress records that are
  * malformed rather than discarding a learner's entire history.
@@ -86,17 +98,32 @@ export function sanitizeLearnerState(
     }
   }
 
-  return {
-    state: {
-      version: value.version,
-      progress,
-      taughtChunkIds: value.taughtChunkIds,
-      completedChunkIds: value.completedChunkIds,
-      completedLectureIds: value.completedLectureIds,
-      injectedByChunk: value.injectedByChunk as LearnerState["injectedByChunk"],
-    },
-    dropped,
+  const state: LearnerState = {
+    version: value.version,
+    progress,
+    taughtChunkIds: value.taughtChunkIds,
+    completedChunkIds: value.completedChunkIds,
+    completedLectureIds: value.completedLectureIds,
+    injectedByChunk: value.injectedByChunk as LearnerState["injectedByChunk"],
   };
+
+  // Study-card progress is optional: state saved before card study existed
+  // has none and loads unchanged. Malformed card records are dropped one by
+  // one, like concept records, rather than discarding the learner's history.
+  if (value.cards !== undefined) {
+    if (!isRecord(value.cards)) return null;
+    const cards: NonNullable<LearnerState["cards"]> = {};
+    for (const [itemId, record] of Object.entries(value.cards)) {
+      if (isCardProgress(record, itemId)) {
+        cards[itemId] = record as NonNullable<LearnerState["cards"]>[string];
+      } else {
+        dropped.push(`card:${itemId}`);
+      }
+    }
+    state.cards = cards;
+  }
+
+  return { state, dropped };
 }
 
 export class LocalStorageLearnerRepository implements LearnerStateRepository {

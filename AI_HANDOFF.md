@@ -103,6 +103,18 @@ restricted and de-duplicated server-side. A CORRECT grade may not list missing
 terms: that contradiction is rejected at every boundary. Do not constrain
 INCORRECT or PARTIAL further without a Stage B policy decision.
 
+**16. The learner experience is Anki-first (AD-24, AD-25).** Learners study
+cards: front → Show Answer → Again/Hard/Good/Easy. A card is a RetrievalItem
+of an ACTIVE Concept, and the Concept stays internal (provenance, approval,
+mastery).
+
+- **Ratings map one-to-one onto FSRS.** Never map Easy to Good, and never
+  route self-ratings through `ratingFor`.
+- **Revealing the answer records nothing.**
+- **Good/Easy only count as spaced success on a Review-state card.** On a card
+  re-shown after Again they are immediate re-study and must not clear WEAK.
+- **Never show approval vocabulary in the Study UI.**
+
 ## How the session loop works
 
 `getNextStep(curriculum, learner, lectureId, now)` is pure. It returns one of:
@@ -145,6 +157,22 @@ Both are version-checked on read; corrupt or future-version data returns `null`
 rather than throwing. Completion is **derived** by `reconcile()` and
 stable across later weakness; newly approved, unattempted concepts reopen their chunk. Never write completion directly.
 
+## Card study (Anki-style)
+
+`lib/engine/study.ts` is the Anki-style loop, separate from the tutor's
+`getNextStep`:
+
+| Function | What it does |
+|---|---|
+| `studyCardsForLecture` | ACTIVE concepts' items, in teaching order; first cards of every concept before second cards |
+| `buildStudyQueue` | New / Learning / Review classification, order, counts, `nextDueAt` |
+| `captureCardPrecondition` | Taken when the answer is shown |
+| `recordCardRating` | Gate → one FSRS transition (`scheduleAfterRating`) → one mastery transition (`applySelfRatingToMastery`) → reconcile |
+
+UI: `src/components/StudySession.tsx` at `/study/[lectureId]`. Ratings are
+applied to `snapshot()` (fresh storage) with the precondition, so a card rated
+in another tab since it was shown is refused, not double-recorded.
+
 ## Adding things
 
 **A new retrieval form** — add to `RetrievalKind`, author items, extend
@@ -184,7 +212,7 @@ above that interface knows where state lives.
 npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
 ```
 
-363 unit tests, 78 E2E tests (39 per project, iPad and desktop viewports). The E2E suite
+394 unit tests, 92 E2E tests (46 per project, iPad and desktop viewports). The E2E suite
 drives the real UI through the complete demo journey, including the deliberate
 ATP-depletion failure.
 

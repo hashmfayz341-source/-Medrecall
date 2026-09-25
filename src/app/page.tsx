@@ -6,6 +6,7 @@ import { useLearner } from "@/components/LearnerProvider";
 import { Button, ButtonLink, Card, MasteryBadge, SectionTitle, Stat } from "@/components/ui";
 import { buildTodayQueue, weakConcepts } from "@/lib/engine/priority";
 import { nextLecture, summarizeLectures } from "@/lib/engine/tutor";
+import { buildStudyQueue, studyCardsForLecture } from "@/lib/engine/study";
 import { draftConcepts } from "@/lib/domain/curriculum";
 
 export default function Dashboard() {
@@ -15,6 +16,15 @@ export default function Dashboard() {
     const now = new Date();
     return {
       lectures: summarizeLectures(curriculum, learner),
+      study: Object.fromEntries(
+        curriculum.course.lectures.map((lecture) => [
+          lecture.id,
+          {
+            cards: studyCardsForLecture(curriculum, lecture.id).length,
+            counts: buildStudyQueue(curriculum, learner, lecture.id, now).counts,
+          },
+        ]),
+      ),
       continueWith: nextLecture(curriculum, learner),
       due: buildTodayQueue(curriculum, learner, now),
       weak: weakConcepts(curriculum, learner),
@@ -117,6 +127,18 @@ export default function Dashboard() {
                     <p className="text-lg font-semibold text-ink-800">
                       {summary.lecture.order}. {summary.lecture.title}
                     </p>
+                    {(view.study[summary.lecture.id]?.cards ?? 0) > 0 && (
+                      <p
+                        data-testid={`study-counts-${summary.lecture.id}`}
+                        className="mt-1 text-sm font-semibold tabular-nums"
+                      >
+                        <span className="text-clinical-700">{view.study[summary.lecture.id]!.counts.new} new</span>
+                        <span className="text-ink-400"> · </span>
+                        <span className="text-red-700">{view.study[summary.lecture.id]!.counts.learning} learning</span>
+                        <span className="text-ink-400"> · </span>
+                        <span className="text-emerald-700">{view.study[summary.lecture.id]!.counts.review} review</span>
+                      </p>
+                    )}
                     <p className="mt-1 text-sm text-ink-500">
                       {summary.attemptedConcepts}/{summary.totalConcepts} concepts
                       started
@@ -128,6 +150,15 @@ export default function Dashboard() {
                       )}
                     </p>
                   </div>
+                  <div className="flex flex-wrap items-center gap-3">
+                  {(view.study[summary.lecture.id]?.cards ?? 0) > 0 && (
+                    <ButtonLink
+                      href={`/study/${summary.lecture.id}`}
+                      data-testid={`study-${summary.lecture.id}`}
+                    >
+                      Study
+                    </ButtonLink>
+                  )}
                   {summary.complete ? (
                     <span
                       data-testid={`complete-${summary.lecture.id}`}
@@ -151,6 +182,7 @@ export default function Dashboard() {
                       Locked
                     </span>
                   )}
+                  </div>
                 </li>
               ))}
             </ul>

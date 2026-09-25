@@ -3,6 +3,7 @@ import {
   fsrs,
   generatorParameters,
   Rating,
+  State,
   type Card,
   type Grade,
 } from "ts-fsrs";
@@ -12,6 +13,7 @@ import type {
   ConceptProgress,
   RetrievalContext,
   ScheduleState,
+  SelfRating,
 } from "@/lib/domain/types";
 
 /**
@@ -87,4 +89,66 @@ export function scheduleAfterAttempt(
 
 export function isDue(progress: ConceptProgress, now: Date): boolean {
   return new Date(progress.schedule.due).getTime() <= now.getTime();
+}
+
+/* ------------------------------------------------------------------ */
+/* Anki-style self-rating                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Self-ratings map one-to-one onto FSRS ratings. This is deliberately a
+ * separate path from `ratingFor()`, which derives a rating from a graded
+ * answer and never produces Easy.
+ */
+export const FSRS_RATING: Readonly<Record<SelfRating, Grade>> = Object.freeze({
+  AGAIN: Rating.Again,
+  HARD: Rating.Hard,
+  GOOD: Rating.Good,
+  EASY: Rating.Easy,
+});
+
+export const SELF_RATINGS: readonly SelfRating[] = ["AGAIN", "HARD", "GOOD", "EASY"];
+
+/** Advance one study card's FSRS schedule for a self-rating. ACTIVE only. */
+export function scheduleAfterRating(
+  concept: Concept,
+  schedule: ScheduleState,
+  rating: SelfRating,
+  now: Date,
+): ScheduleState {
+  assertActive(concept, "scheduling");
+  const result = engine.next(toCard(schedule), now, FSRS_RATING[rating]);
+  return toScheduleState(result.card);
+}
+
+/**
+ * When each rating would schedule the card next — the interval hints Anki
+ * shows on its buttons. Pure: nothing is recorded.
+ */
+export function previewRatings(
+  schedule: ScheduleState,
+  now: Date,
+): Record<SelfRating, Date> {
+  const outcomes = engine.repeat(toCard(schedule), now);
+  return {
+    AGAIN: outcomes[Rating.Again].card.due,
+    HARD: outcomes[Rating.Hard].card.due,
+    GOOD: outcomes[Rating.Good].card.due,
+    EASY: outcomes[Rating.Easy].card.due,
+  };
+}
+
+/** Which Anki queue a card's FSRS state belongs to. */
+export function queueForSchedule(schedule: ScheduleState): "NEW" | "LEARNING" | "REVIEW" {
+  if (schedule.state === State.New) return "NEW";
+  if (schedule.state === State.Review) return "REVIEW";
+  return "LEARNING";
+}
+
+/** Mastery context implied by a card's FSRS state before it is rated. */
+export function contextForSchedule(schedule: ScheduleState): RetrievalContext {
+  const queue = queueForSchedule(schedule);
+  if (queue === "NEW") return "INITIAL";
+  if (queue === "REVIEW") return "SPACED";
+  return "IMMEDIATE_REMEDIATION";
 }

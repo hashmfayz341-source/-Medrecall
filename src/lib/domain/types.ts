@@ -171,6 +171,29 @@ export interface ConceptProgress {
   schedule: ScheduleState;
 }
 
+/**
+ * An Anki-style self-rating, chosen by the learner after seeing the answer.
+ * Maps one-to-one onto FSRS ratings — Easy is never collapsed into Good.
+ */
+export type SelfRating = "AGAIN" | "HARD" | "GOOD" | "EASY";
+
+/**
+ * Per-learner record for one STUDY CARD — a RetrievalItem studied on its own.
+ *
+ * FSRS schedules each card individually, exactly as Anki schedules each card
+ * of a note. The Concept the card represents keeps its own ConceptProgress
+ * (mastery), which every card of that concept feeds.
+ */
+export interface CardProgress {
+  itemId: string;
+  conceptId: string;
+  schedule: ScheduleState;
+  /** Number of self-ratings recorded for this card. */
+  reviews: number;
+  lastRating: SelfRating | null;
+  lastReviewedAt: string | null;
+}
+
 /** Per-learner state. Everything the tutor knows about one student. */
 export interface LearnerState {
   version: number;
@@ -183,4 +206,10 @@ export interface LearnerState {
   completedLectureIds: string[];
   /** Interleaved concept ids already injected, keyed by chunk id. */
   injectedByChunk: Record<string, string[]>;
+  /**
+   * Study-card progress keyed by RetrievalItem id. Optional so learner state
+   * saved before card study existed loads unchanged; absent means no card has
+   * been studied yet.
+   */
+  cards?: Record<string, CardProgress>;
 }

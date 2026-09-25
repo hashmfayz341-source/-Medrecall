@@ -3,6 +3,7 @@ import type {
   MasteryState,
   RetrievalContext,
   ScheduleState,
+  SelfRating,
 } from "./types";
 
 /**
@@ -117,4 +118,54 @@ export function isWeak(progress: ConceptProgress): boolean {
 /** Mastery states that still need work before a lecture counts as finished. */
 export function needsMoreWork(progress: ConceptProgress): boolean {
   return progress.mastery === "NEW" || progress.mastery === "WEAK";
+}
+
+/**
+ * Mastery transition for an Anki-style self-rating.
+ *
+ * `context` is derived from the CARD's FSRS state before the rating, never
+ * chosen by the UI:
+ *   - a New card            → "INITIAL"               (first exposure)
+ *   - a Learning/Relearning → "IMMEDIATE_REMEDIATION" (re-shown minutes later)
+ *   - a Review card         → "SPACED"                (came due after an interval)
+ *
+ * Rules:
+ *   AGAIN — a failed retrieval: WEAK, streak reset (the existing failure rule).
+ *   HARD  — recalled, with difficulty. Counts as an attempt and as correct, but
+ *           is never a spaced success: it does not advance the streak and does
+ *           not clear WEAK. A new concept moves NEW → LEARNING, and a hard
+ *           recall straight after re-study marks the remediation as followed.
+ *   GOOD / EASY — a successful retrieval under the EXISTING rules for the
+ *           context: only a Review-state card counts as spaced retrieval and
+ *           can advance the streak or clear WEAK. On a Learning/Relearning card
+ *           (e.g. re-shown a minute after Again) it is immediate-remediation
+ *           success, which deliberately does NOT clear WEAK (AD-4). Easy and
+ *           Good have the same mastery effect; they differ only in FSRS.
+ *
+ * Self-rating right after revealing the answer is still self-assessment, so
+ * there is no percentage and no extra credit for Easy.
+ */
+export function applySelfRatingToMastery(
+  progress: ConceptProgress,
+  rating: SelfRating,
+  context: RetrievalContext,
+  at: string,
+): ConceptProgress {
+  if (rating === "AGAIN") {
+    return applyRetrievalToMastery(progress, { correct: false, context, at });
+  }
+  if (rating === "HARD") {
+    const base: ConceptProgress = {
+      ...progress,
+      totalAttempts: progress.totalAttempts + 1,
+      totalCorrect: progress.totalCorrect + 1,
+      lastAttemptAt: at,
+    };
+    if (context === "IMMEDIATE_REMEDIATION") {
+      return { ...base, immediateRemediationPassed: true };
+    }
+    if (progress.mastery === "NEW") return { ...base, mastery: "LEARNING" };
+    return base;
+  }
+  return applyRetrievalToMastery(progress, { correct: true, context, at });
 }
