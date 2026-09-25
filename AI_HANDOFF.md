@@ -96,6 +96,13 @@ imported from its own module. Never reintroduce a shared `getProvider()`, and
 never have one role's resolver read another's configuration. Binding a hosted
 grader must not change extraction.
 
+**15. The server owns the final GradeResult (AD-19).** A provider contributes
+the outcome and reviewed-vocabulary matched and missing terms only.
+`normalizedAnswer` is always MedRecall's `normalize(answer)`, and terms are
+restricted and de-duplicated server-side. A CORRECT grade may not list missing
+terms: that contradiction is rejected at every boundary. Do not constrain
+INCORRECT or PARTIAL further without a Stage B policy decision.
+
 ## How the session loop works
 
 `getNextStep(curriculum, learner, lectureId, now)` is pure. It returns one of:
@@ -177,7 +184,7 @@ above that interface knows where state lives.
 npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
 ```
 
-355 unit tests, 78 E2E tests (39 per project, iPad and desktop viewports). The E2E suite
+363 unit tests, 78 E2E tests (39 per project, iPad and desktop viewports). The E2E suite
 drives the real UI through the complete demo journey, including the deliberate
 ATP-depletion failure.
 
@@ -269,6 +276,16 @@ Review repairs made within Stage A:
   hosted providers are refused until abuse control exists (AD-22).
 - **H3:** grading and extraction providers are resolved separately, so a
   hosted grader cannot change ingestion (AD-23).
+- **Final hardening:**
+  - **M-1:** a shared-resolver import-graph guard.
+  - **L-1:** `normalizedAnswer` is server-computed.
+  - **L-2:** a CORRECT grade may not carry missing terms.
+  - **L-3:** reviewed terms are de-duplicated.
+- **Deferred (documented, not in Stage A):**
+  - transactional multi-tab storage;
+  - Content-Type enforcement and streamed body caps on `/api/grade`;
+  - stale/not-gradable message polish;
+  - everything in Stage B.
 - **L1:** route and doc wording corrected. Providers decide the grade only, and
   remediation is composed from reviewed material.
 

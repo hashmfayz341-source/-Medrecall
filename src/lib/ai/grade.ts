@@ -1,4 +1,9 @@
-import { isValidGradeResult, sanitizeGradeResult } from "@/lib/grading";
+import {
+  isValidGradeResult,
+  normalize,
+  sanitizeGradeResult,
+  type GradeResult,
+} from "@/lib/grading";
 import {
   GRADE_REQUEST_LIMITS,
   type GradeRequest,
@@ -75,12 +80,17 @@ export async function gradeWithProvider(
   if (!isValidGradeResult(raw)) return { ok: false, failure: "MALFORMED_GRADE" };
   const checked = sanitizeGradeResult(raw);
 
-  // Terms a grader reports are limited to this item's reviewed vocabulary, so
-  // no provider-invented wording travels onward in the grade either.
-  const grade = {
-    ...checked,
+  // The server builds the final GradeResult. From the provider it takes only
+  // the assessment: the outcome, and matched/missing terms restricted to this
+  // item's reviewed vocabulary and de-duplicated. `normalizedAnswer` is
+  // recomputed from the learner's own answer, never taken from the provider,
+  // so no provider-written text travels onward in the grade.
+  const grade: GradeResult = {
+    outcome: checked.outcome,
+    correct: checked.correct,
     matched: restrictToReviewedTerms(checked.matched, item),
     missing: restrictToReviewedTerms(checked.missing, item),
+    normalizedAnswer: normalize(answer),
   };
 
   let remediation: string | null = null;

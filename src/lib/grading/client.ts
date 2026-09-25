@@ -71,6 +71,7 @@ export async function requestGrade(
   const response = parseGradeResponse(json, {
     conceptId: request.concept.id,
     itemId: request.item.id,
+    answer: request.answer,
   });
   if (!response) return gradeFailure("GRADING_UNAVAILABLE");
   return { ok: true, response };

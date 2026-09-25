@@ -5,7 +5,7 @@ import type {
   RetrievalKind,
   SourceRef,
 } from "@/lib/domain/types";
-import { isValidGradeResult, type GradeResult } from "./index";
+import { isValidGradeResult, normalize, type GradeResult } from "./index";
 
 /**
  * The wire contract between the browser and POST /api/grade.
@@ -296,12 +296,13 @@ export function parseGradeRequest(value: unknown): ParseResult<GradeRequest> {
  * Validate the server's reply in the browser before anything acts on it.
  *
  * The reply must be for the exact concept and item that were submitted, carry
- * a structurally valid grade, and include remediation exactly when the answer
- * was not fully correct. Anything else is treated as a failed request.
+ * a structurally valid grade whose normalizedAnswer is the normalization of
+ * the submitted answer, and include remediation exactly when the answer was
+ * not fully correct. Anything else is treated as a failed request.
  */
 export function parseGradeResponse(
   value: unknown,
-  expected: { conceptId: string; itemId: string },
+  expected: { conceptId: string; itemId: string; answer?: string },
 ): GradeResponse | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
@@ -311,6 +312,11 @@ export function parseGradeResponse(
   if (v.conceptId !== expected.conceptId || v.itemId !== expected.itemId) return null;
   if (!isValidGradeResult(v.grade)) return null;
   const grade = v.grade;
+  // The normalized answer must be MedRecall's own normalization of what this
+  // browser sent — never provider text.
+  if (expected.answer !== undefined && grade.normalizedAnswer !== normalize(expected.answer)) {
+    return null;
+  }
 
   const remediation = v.remediation;
   if (grade.outcome === "CORRECT") {

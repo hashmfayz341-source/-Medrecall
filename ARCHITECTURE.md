@@ -441,9 +441,27 @@ before the request is built and again before the grade is applied). It
 remains mandatory. A server-authoritative gate needs server-side curriculum
 (Milestone 4). See AD-22 for why this matters before any paid provider.
 
-**Provider output is untrusted.** `lib/ai/grade.ts` enforces a 12 s timeout
-per provider call, validates the grade and strips it to its known fields, and
-restricts its matched and missing terms to the item's own reviewed vocabulary.
+**Provider output is untrusted, and the server owns the final GradeResult.**
+`lib/ai/grade.ts` enforces a 12 s timeout per provider call and validates the
+provider's grade. It then builds the GradeResult itself:
+
+- `outcome` and `correct` come from the provider; they must agree.
+- `matched` and `missing` come from the provider, restricted to the item's
+  reviewed vocabulary (rubric synonyms and accepted answers) and
+  de-duplicated in stable order.
+- `normalizedAnswer` is always `normalize(answer)`, computed by MedRecall.
+  The provider's value is discarded, and the browser rejects a reply whose
+  `normalizedAnswer` is not the normalization of what it sent.
+
+**What `matched` and `missing` mean.** They are explanatory metadata: which
+reviewed terms the grader found, and which it judged absent. Only the
+**outcome** drives mastery and FSRS. `missing` is used for exactly one thing,
+naming missed terms in the deterministic remediation. The contract, enforced
+by `isValidGradeResult` at every boundary (provider → route, route → browser,
+browser → engine): **a CORRECT grade carries no missing terms.** INCORRECT
+and PARTIAL are deliberately not further constrained. A semantic grader may
+judge an answer insufficient even when every keyword appears, and PARTIAL
+policy is Stage B.
 Every provider failure is a neutral, retryable 502/504 with no exception text,
 stack, path, prompt or raw provider response.
 
@@ -621,8 +639,16 @@ uploads call a paid model, and forced the grading adapter to implement
 extraction. Each of those is a separate decision that deserves its own
 review.
 
-**Enforcement.** `tests/unit/provider-separation.test.ts` checks that each
-route calls only its own resolver, that substituting one role leaves the
+**Enforcement.** `tests/unit/client-boundary.test.ts` requires that the only
+modules reachable from BOTH resolvers are `deterministic.ts`, `policy.ts`,
+`provider.ts` and their own dependencies, checked on the real runtime import
+graph with no filenames special-cased. A shared resolver, factory, config or
+env-reading module, inside `lib/ai` or anywhere else, fails it. Three
+mutations (a shared resolver in `lib/ai`, per-role config modules that both
+read one switch outside `lib/ai`, and a differently named factory) each failed
+this test. The first of those had passed every earlier test.
+`tests/unit/provider-separation.test.ts` checks that each route calls only its
+own resolver, that substituting one role leaves the
 other's output byte-identical, that a hosted grader stand-in is never used for
 extraction, and that a grading-only provider type-checks without
 `extractConcepts`. `tests/unit/client-boundary.test.ts` walks the import graph:

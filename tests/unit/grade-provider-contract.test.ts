@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { pathologyCurriculum } from "@/lib/content/pathology";
 import { getConcept, getItem } from "@/lib/engine/tutor";
-import { gradeAnswer, type GradeResult } from "@/lib/grading";
+import { gradeAnswer, isValidGradeResult, normalize, type GradeResult } from "@/lib/grading";
+import { requestGrade } from "@/lib/grading/client";
+import { restrictToReviewedTerms } from "@/lib/grading/remediation";
+import { createLearnerState, recordGradedAttempt } from "@/lib/engine/tutor";
 import { toGradeRequest } from "@/lib/grading/request";
 import { composeRemediation } from "@/lib/grading/remediation";
 import { DeterministicProvider, type AiProvider } from "@/lib/ai";
@@ -138,5 +141,111 @@ describe("M1: remediation is assembled from reviewed material, never provider pr
     });
     const other = (await grade(WRONG)).body.remediation;
     expect(other).toBe(reference);
+  });
+});
+
+describe("L-1/L-2/L-3: the server owns the final GradeResult", () => {
+  const INVENTED = "NOTE TO STUDENT: invented medical advice — give 5 mg/kg methylene blue";
+
+  function assessing(grade: Partial<GradeResult>) {
+    return provider({
+      gradeFreeAnswer: async () => ({
+        outcome: "INCORRECT",
+        correct: false,
+        matched: [],
+        missing: [],
+        normalizedAnswer: "",
+        ...grade,
+      }),
+    });
+  }
+
+  it("L-1: the provider's normalizedAnswer is ignored; the server's normalize(answer) is returned", async () => {
+    for (const outcome of ["CORRECT", "INCORRECT", "PARTIAL"] as const) {
+      inject.provider = assessing({ outcome, correct: outcome === "CORRECT", normalizedAnswer: INVENTED });
+      const { status, body } = await grade(WRONG);
+      expect(status).toBe(200);
+      const g = body.grade as GradeResult;
+      expect(g.normalizedAnswer).toBe(normalize(WRONG));
+      expect(JSON.stringify(body)).not.toContain("NOTE TO STUDENT");
+      expect(JSON.stringify(body)).not.toContain("methylene");
+    }
+  });
+
+  it("L-1: the browser also refuses a reply whose normalizedAnswer is not its own answer", async () => {
+    const good = {
+      provider: "deterministic",
+      conceptId: ATP.id,
+      itemId: ATP1.id,
+      grade: gradeAnswer(ATP1, CORRECT_ATP),
+      remediation: null,
+    };
+    const request = toGradeRequest(ATP, ATP1, CORRECT_ATP);
+    const reply = (g: unknown) => async () => new Response(JSON.stringify({ ...good, grade: g }), { status: 200 });
+    expect((await requestGrade(request, reply(good.grade))).ok).toBe(true);
+    expect(
+      (await requestGrade(request, reply({ ...good.grade, normalizedAnswer: INVENTED }))).ok,
+    ).toBe(false);
+  });
+
+  it("L-2: CORRECT that claims required information is missing does not cross the boundary", async () => {
+    for (const missing of [["water"], ["sodium", "water"], ["give methylene blue"], [""]]) {
+      inject.provider = assessing({ outcome: "CORRECT", correct: true, missing });
+      const { status, body } = await grade(CORRECT_ATP);
+      expect(status, JSON.stringify(missing)).toBe(502);
+      expect(body.code).toBe("GRADING_UNAVAILABLE");
+    }
+  });
+
+  it("L-2: the engine and the browser refuse CORRECT-with-missing too", async () => {
+    const contradictory = { ...gradeAnswer(ATP1, CORRECT_ATP), missing: ["water"] };
+    expect(isValidGradeResult(contradictory)).toBe(false);
+    expect(() =>
+      recordGradedAttempt(pathologyCurriculum, createLearnerState(), {
+        conceptId: ATP.id,
+        itemId: ATP1.id,
+        context: "INITIAL",
+        now: new Date("2026-06-01T00:00:00Z"),
+      }, contradictory),
+    ).toThrow();
+    const request = toGradeRequest(ATP, ATP1, CORRECT_ATP);
+    const reply = async () =>
+      new Response(
+        JSON.stringify({ provider: "d", conceptId: ATP.id, itemId: ATP1.id, grade: contradictory, remediation: null }),
+        { status: 200 },
+      );
+    expect((await requestGrade(request, reply)).ok).toBe(false);
+  });
+
+  it("L-2: INCORRECT/PARTIAL are not over-constrained (semantic graders may disagree with keyword coverage)", async () => {
+    const everything = ATP1.requiredKeywords.map((g) => g[0]!);
+    for (const outcome of ["INCORRECT", "PARTIAL"] as const) {
+      inject.provider = assessing({ outcome, matched: everything, missing: [] });
+      const { status, body } = await grade(CORRECT_ATP);
+      expect(status).toBe(200);
+      expect((body.grade as GradeResult).outcome).toBe(outcome);
+      expect(body.remediation).toContain(ATP.source.excerpt);
+    }
+  });
+
+  it("L-3: repeated reviewed terms are de-duplicated, order preserved, before remediation and response", async () => {
+    inject.provider = assessing({
+      matched: ["sodium", "SODIUM", "sodium"],
+      missing: ["water", "water", "WATER!!!", "na+/k+ atpase", "water", "Na+/K+ ATPase"],
+    });
+    const { status, body } = await grade(WRONG);
+    expect(status).toBe(200);
+    const g = body.grade as GradeResult;
+    expect(g.missing).toEqual(["water", "na+/k+ atpase"]);
+    expect(g.matched).toEqual(["sodium"]);
+    const firstLine = (body.remediation as string).split("\n")[0];
+    expect(firstLine).toBe("Your answer did not mention: water, na+/k+ atpase.");
+  });
+
+  it("L-3: restrictToReviewedTerms itself is unique and stable", () => {
+    expect(restrictToReviewedTerms(["water", "sodium", "water", "sodium", "water"], ATP1)).toEqual([
+      "water",
+      "sodium",
+    ]);
   });
 });

@@ -91,6 +91,36 @@ describe("providers never reach the browser", () => {
     expect([...reachable(join(ROOT, route))].some((f) => f.startsWith(AI_DIR))).toBe(true);
   });
 
+  it("the two role resolvers share no resolver or configuration code, directly or indirectly", () => {
+    // M-1. Both resolvers may legitimately share only the provider
+    // implementation, the hosted-provider policy and the role types — and
+    // whatever those three modules themselves depend on. ANY other module
+    // reachable from both resolvers (a shared resolver, factory, config or
+    // env reader, inside lib/ai or anywhere else) would again let one switch
+    // choose the provider for both roles. No filenames are special-cased:
+    // the check is on the real runtime import graph.
+    const ALLOWED_SHARED = ["deterministic.ts", "policy.ts", "provider.ts"].map((f) => join(AI_DIR, f));
+    const allowedClosure = new Set<string>();
+    for (const file of ALLOWED_SHARED) {
+      if (existsSync(file)) for (const dep of reachable(file)) allowedClosure.add(dep);
+    }
+
+    const grading = reachable(join(AI_DIR, "gradingProvider.ts"));
+    const extraction = reachable(join(AI_DIR, "extractionProvider.ts"));
+    grading.delete(join(AI_DIR, "gradingProvider.ts"));
+    extraction.delete(join(AI_DIR, "extractionProvider.ts"));
+
+    const sharedButNotAllowed = [...grading]
+      .filter((f) => extraction.has(f))
+      .filter((f) => !allowedClosure.has(f))
+      .map((f) => f.replace(ROOT + "/", ""));
+    expect(sharedButNotAllowed).toEqual([]);
+
+    // And neither resolver may reach the other.
+    expect(grading.has(join(AI_DIR, "extractionProvider.ts"))).toBe(false);
+    expect(extraction.has(join(AI_DIR, "gradingProvider.ts"))).toBe(false);
+  });
+
   it("grading and extraction resolve through separate, non-overlapping resolvers", () => {
     const GRADING = join(AI_DIR, "gradingProvider.ts");
     const EXTRACTION = join(AI_DIR, "extractionProvider.ts");

@@ -34,10 +34,30 @@ export interface GradeResult {
    * PARTIAL answer is never `correct`.
    */
   correct: boolean;
-  /** One representative matched term per satisfied keyword group. */
+  /**
+   * Reviewed rubric terms (or accepted answers) the grader found in the
+   * answer. Explanatory metadata only: the OUTCOME alone drives mastery and
+   * FSRS. At the server boundary this is restricted to the item's own reviewed
+   * vocabulary and de-duplicated.
+   */
   matched: string[];
-  /** The first synonym of each group the learner missed. */
+  /**
+   * Reviewed rubric terms the grader judged absent. Used only to name missed
+   * terms in the deterministic remediation. Restricted to the item's reviewed
+   * vocabulary and de-duplicated at the server boundary.
+   *
+   * Contract: a CORRECT grade has NO missing terms — "correct" and "required
+   * information is missing" cannot both be true, and such a grade is rejected
+   * at every boundary. INCORRECT and PARTIAL are not further constrained: a
+   * semantic grader may judge an answer insufficient even when every keyword
+   * appears, or sufficient-in-part with few keywords.
+   */
   missing: string[];
+  /**
+   * `normalize(answer)`. Always computed by MedRecall itself: the server
+   * overwrites whatever a provider returns here, and the browser checks it
+   * against its own answer, so no provider-written text travels in it.
+   */
   normalizedAnswer: string;
 }
 
@@ -122,8 +142,9 @@ function isBoundedStringArray(value: unknown): value is string[] {
  * the browser.
  *
  * It rejects anything the engine cannot safely act on — an unknown outcome,
- * and above all a `correct` flag that disagrees with `outcome`, which would
- * otherwise let a malformed PARTIAL be credited as a success.
+ * a `correct` flag that disagrees with `outcome` (which would otherwise let a
+ * malformed PARTIAL be credited as a success), and a CORRECT outcome that
+ * still lists missing terms.
  */
 export function isValidGradeResult(value: unknown): value is GradeResult {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -134,6 +155,8 @@ export function isValidGradeResult(value: unknown): value is GradeResult {
   if (typeof v.correct !== "boolean") return false;
   if (v.correct !== (v.outcome === "CORRECT")) return false;
   if (!isBoundedStringArray(v.matched) || !isBoundedStringArray(v.missing)) return false;
+  // A CORRECT answer cannot also be missing required information (L-2).
+  if (v.outcome === "CORRECT" && v.missing.length > 0) return false;
   if (
     typeof v.normalizedAnswer !== "string" ||
     v.normalizedAnswer.length > GRADE_LIMITS.maxNormalizedAnswerChars

@@ -33,8 +33,10 @@ export interface RemediationInput {
  * Restrict grader-reported terms to the item's own reviewed vocabulary:
  * rubric synonyms and accepted answers. A term that matches exactly is kept
  * as-is; one that matches after normalisation is replaced by the reviewed
- * spelling; anything else is dropped. Empty strings (a deterministic artefact
- * of an empty keyword group) pass through and are never displayed.
+ * spelling; anything else is dropped. The result is de-duplicated, keeping the
+ * first occurrence, so a grader cannot repeat a term. Empty strings (a
+ * deterministic artefact of an empty keyword group) pass through once and are
+ * never displayed.
  */
 export function restrictToReviewedTerms(terms: readonly string[], item: RetrievalItem): string[] {
   const reviewed = [...item.requiredKeywords.flat(), ...item.acceptableAnswers];
@@ -45,13 +47,19 @@ export function restrictToReviewedTerms(terms: readonly string[], item: Retrieva
     if (key && !canonical.has(key)) canonical.set(key, term);
   }
   const out: string[] = [];
+  const seen = new Set<string>();
+  const keep = (term: string) => {
+    if (seen.has(term)) return;
+    seen.add(term);
+    out.push(term);
+  };
   for (const term of terms) {
     if (term === "" || exact.has(term)) {
-      out.push(term);
+      keep(term);
       continue;
     }
     const match = canonical.get(normalize(term));
-    if (match !== undefined) out.push(match);
+    if (match !== undefined) keep(match);
   }
   return out;
 }
