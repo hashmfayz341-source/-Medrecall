@@ -96,7 +96,11 @@ describe("ai provider abstraction", () => {
   const provider = new DeterministicProvider();
 
   it("grades through the provider identically to the pure grader", async () => {
-    const viaProvider = await provider.gradeFreeAnswer(atp1, CORRECT_ATP);
+    const viaProvider = await provider.gradeFreeAnswer({
+      concept: atp,
+      item: atp1,
+      answer: CORRECT_ATP,
+    });
     expect(viaProvider).toEqual(gradeAnswer(atp1, CORRECT_ATP));
   });
 

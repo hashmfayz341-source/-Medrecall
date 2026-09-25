@@ -52,11 +52,56 @@ read and unlock the next lecture. `isChunkComplete()` now requires at least one
 ACTIVE concept and `getNextStep()` returns `AWAITING_APPROVAL`. Any future
 notion of completion must mean "approved and retrieved", never "seen".
 
-**7. API keys stay server-side.** `lib/ai/index.ts` must never be imported into
-a client component. Nothing goes through `NEXT_PUBLIC_*`.
+**7. API keys stay server-side.** Nothing in `lib/ai/` may be imported into a
+client component, directly or transitively. `tests/unit/client-boundary.test.ts`
+walks the import graph to enforce this. Nothing goes through `NEXT_PUBLIC_*`.
 
 **8. Keep the engine out of React.** `lib/domain` is pure and imports nothing
 outward. The whole tutor runs headless in tests — keep it that way.
+
+**9. Grading decision ≠ state mutation (AD-19).** Providers grade, and only
+server-side, behind `POST /api/grade`. They receive `{ concept, item, answer }`,
+including the verbatim source excerpt. The engine applies an already-computed
+grade through `recordGradedAttempt()`, which never calls a provider or the
+network. Never add a grading call inside the engine, and never let provider
+output reach learner state without passing `isValidGradeResult()`. A failed
+grading request must leave learner state untouched. It is not a wrong answer.
+
+**10. PARTIAL earns nothing yet.** `GradeOutcome` includes `PARTIAL`, but until
+its mastery policy is designed the engine treats it as INCORRECT, and
+`correct` is true only for `CORRECT`. Changing that is Stage B work. The pinned
+test in `tests/unit/grade-atomicity.test.ts` is there to make it deliberate.
+
+**11. A pending grade applies only to the state it was made against (AD-20).**
+Every asynchronous caller passes the precondition captured at submit to
+`recordGradedAttempt`. If the concept was attempted since, or its wording,
+rubric or source changed, the grade is STALE and is discarded. Never "just
+apply it to the latest state": that double-counts attempts and runs FSRS
+backwards.
+
+**12. Providers write no learner-facing medical text (AD-21).** Remediation is
+`composeRemediation()`: reviewed explanation plus verbatim excerpt plus missed
+terms from the item's own rubric. "Contains the excerpt" is a provenance
+tripwire, not grounding. Never use it to admit model prose.
+
+**13. The server cannot verify ACTIVE yet, so no paid provider (AD-22).** The
+route's status check validates client-supplied state and is not authoritative.
+The domain/engine gate in the app stays mandatory. Both role resolvers refuse
+any hosted provider until server-side abuse control exists. Build that first. It
+is a Stage B prerequisite.
+
+**14. One resolver per provider role (AD-23).** `/api/grade` uses
+`getGradingProvider()` and `/api/ingest` uses `getExtractionProvider()`, each
+imported from its own module. Never reintroduce a shared `getProvider()`, and
+never have one role's resolver read another's configuration. Binding a hosted
+grader must not change extraction.
+
+**15. The server owns the final GradeResult (AD-19).** A provider contributes
+the outcome and reviewed-vocabulary matched and missing terms only.
+`normalizedAnswer` is always MedRecall's `normalize(answer)`, and terms are
+restricted and de-duplicated server-side. A CORRECT grade may not list missing
+terms: that contradiction is rejected at every boundary. Do not constrain
+INCORRECT or PARTIAL further without a Stage B policy decision.
 
 ## How the session loop works
 
@@ -65,13 +110,17 @@ outward. The whole tutor runs headless in tests — keep it that way.
 | Step | Meaning | How state advances |
 |---|---|---|
 | `TEACH` | ACTIVE summaries + approved source excerpts | `markChunkTaught()` |
-| `RETRIEVE` | First unaided test (`INITIAL`) | `recordAttempt()` |
-| `REMEDIATE` | Re-teach after a failure (`IMMEDIATE_REMEDIATION`) | `recordAttempt()` |
-| `INTERLEAVE` | Weak/due concept from an earlier lecture (`INTERLEAVED`) | `recordAttempt()` |
+| `RETRIEVE` | First unaided test (`INITIAL`) | `/api/grade` → `recordGradedAttempt()` |
+| `REMEDIATE` | Re-teach after a failure (`IMMEDIATE_REMEDIATION`) | `/api/grade` → `recordGradedAttempt()` |
+| `INTERLEAVE` | Weak/due concept from an earlier lecture (`INTERLEAVED`) | `/api/grade` → `recordGradedAttempt()` |
 | `AWAITING_APPROVAL` | Chunk has no ACTIVE concepts yet | approve drafts |
 | `LECTURE_COMPLETE` | Nothing left in this lecture | — |
 
-The UI is a thin driver: ask for the step, render it, call back, repeat.
+The UI is a thin driver: ask for the step, render it, call back, repeat. For
+question steps, "call back" is `submitAnswer()` in `lib/session/`. It sends the
+attempt to the server, validates the reply, and only then calls the engine.
+Headless tests use `recordAttempt()`, the deterministic wrapper around the same
+`recordGradedAttempt()`.
 `tests/unit/driver.ts` drives the identical loop headlessly — if you change the
 loop, that driver is the fastest way to see the consequences.
 
@@ -101,9 +150,21 @@ stable across later weakness; newly approved, unattempted concepts reopen their 
 **A new retrieval form** — add to `RetrievalKind`, author items, extend
 `pickItem()` if selection should change. Mastery and scheduling need no changes.
 
-**A real AI provider** — implement `AiProvider` in `src/lib/ai/`, bind it in
-`getProvider()`. `extractConcepts()` must return `status: "DRAFT"` with a
-populated `SourceRef`. Run it server-side only.
+**A real AI provider** — first build server-side abuse control
+(authentication, rate limiting and a spend quota, or equivalent) and set
+`HOSTED_PROVIDER_SAFEGUARDS.abuseControl` in that same change. Until then
+the role resolvers refuse any `hosted` provider (AD-22). Then implement the
+ROLE you are changing. A model grader implements `GradingProvider` only, with
+`hosted: true`, bound in `getGradingProvider()` (`lib/ai/gradingProvider.ts`)
+from a server-side env var. That must not touch `getExtractionProvider()`
+(AD-23). An extraction model is a separate change in
+`lib/ai/extractionProvider.ts`, and `extractConcepts()` must return
+`status: "DRAFT"` with a populated `SourceRef`. `gradeFreeAnswer({ concept,
+item, answer })` must return a `GradeResult` whose `correct` matches its
+`outcome`, and whose matched and missing terms come from the item's rubric;
+other terms are dropped. It writes no remediation. Nothing else changes: the
+route, the engine, `submitAnswer` and the UI stay as they are. Keep
+`tests/unit/grade-parity.test.ts` green for the deterministic provider.
 
 **A real extraction provider** — implement `extractConcepts` in a new
 `AiProvider`. It must return `status: "DRAFT"` with a populated `SourceRef`,
@@ -123,7 +184,7 @@ above that interface knows where state lives.
 npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
 ```
 
-176 unit tests, 42 E2E tests across iPad and desktop viewports. The E2E suite
+363 unit tests, 78 E2E tests (39 per project, iPad and desktop viewports). The E2E suite
 drives the real UI through the complete demo journey, including the deliberate
 ATP-depletion failure.
 
@@ -162,7 +223,9 @@ Chromium; the config prefers it over downloading.
 
 ## Current limitations
 
-Per-browser persistence, keyword grading, no OCR for scanned PDFs, no merging
+Per-browser persistence, keyword grading (now behind the server grading
+boundary, but still deterministic), grading needs the network, the server
+grades against the rubric the browser sends until curriculum is server-side, no OCR for scanned PDFs, no merging
 of duplicate candidates across documents, prerequisite graph not hand-editable,
 "View Source" shows the excerpt rather than the page image, one fixed course
 (lectures can be created), `reconcile()` unindexed. See ROADMAP.md.
@@ -186,3 +249,46 @@ iPad/Safari verification were blocked in the audit environment and must run befo
 merging. The 42 E2E cases are defined, not claimed as passed. Remote branch creation
 was rejected by the connected GitHub integration (403), so this work was exported
 as a patch; do not assume a PR exists or has been merged.
+
+## Milestone 3, Stage A — grading boundary
+
+Answer grading and remediation moved behind `POST /api/grade`, and the engine
+was split so that grading and state mutation are separate (AD-19). User-visible
+behaviour is unchanged: `getGradingProvider()` and `getExtractionProvider()`
+both return `DeterministicProvider`.
+`tests/unit/grade-parity.test.ts` runs every step of several full journeys,
+plus every item × context × answer shape, through both the pre-boundary
+`recordAttempt` (copied verbatim from main at 0c3f502) and the new
+route-backed flow, and demands identical learner state at every step.
+
+New tests: `grade-route`, `grade-atomicity`, `grade-parity`, `client-boundary`,
+`grade-stale`, `grade-provider-contract`, `provider-policy`,
+`provider-separation` (unit), and
+`tests/e2e/grading-boundary.spec.ts`, including a two-tab race.
+
+Review repairs made within Stage A:
+- **H1:** stale asynchronous grades are refused by an attempt precondition
+  (AD-20).
+- **H2:** providers receive the concept and source, not just the item.
+- **M1:** remediation is composed from reviewed material, never provider prose
+  (AD-21).
+- **M2:** the route's ACTIVE check is documented as non-authoritative, and
+  hosted providers are refused until abuse control exists (AD-22).
+- **H3:** grading and extraction providers are resolved separately, so a
+  hosted grader cannot change ingestion (AD-23).
+- **Final hardening:**
+  - **M-1:** a shared-resolver import-graph guard.
+  - **L-1:** `normalizedAnswer` is server-computed.
+  - **L-2:** a CORRECT grade may not carry missing terms.
+  - **L-3:** reviewed terms are de-duplicated.
+- **Deferred (documented, not in Stage A):**
+  - transactional multi-tab storage;
+  - Content-Type enforcement and streamed body caps on `/api/grade`;
+  - stale/not-gradable message polish;
+  - everything in Stage B.
+- **L1:** route and doc wording corrected. Providers decide the grade only, and
+  remediation is composed from reviewed material.
+
+Not in Stage A: any hosted model or API key, the PARTIAL mastery policy,
+disagreement logging, model-written medical content, extraction changes,
+accounts or sync.

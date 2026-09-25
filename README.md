@@ -106,11 +106,12 @@ src/
   lib/
     domain/       Pure types, approval gate, mastery rules, curriculum state
     engine/       Tutor orchestration, priority queue, FSRS scheduling
-    grading/      Deterministic free-recall grading
+    grading/      Deterministic grading, /api/grade contract, remediation composer
+    session/      One submission: gate, server grade, stale check, engine
     ingestion/    PDF page extraction + candidate concept generation
     persistence/  Repository interfaces + browser-local implementations
     content/      The authored Pathology demo curriculum
-    ai/           Provider-agnostic AI interface + deterministic implementation
+    ai/           Server-only provider roles (grading, extraction), one resolver each
 tests/
   unit/           Vitest: gate, mastery, grading, unlock, interleaving,
                   journey, ingestion, draft lifecycle

@@ -5,7 +5,7 @@ import {
   extractPdfPages,
 } from "@/lib/ingestion/pdf";
 import { ingestErrorResponse } from "@/lib/ingestion/ingestErrors";
-import { getProvider } from "@/lib/ai";
+import { getExtractionProvider } from "@/lib/ai/extractionProvider";
 import type { Concept } from "@/lib/domain/types";
 
 /**
@@ -92,9 +92,9 @@ export async function POST(request: Request) {
     );
   }
 
-  // Extraction goes through the provider abstraction, so a hosted model can
-  // replace the deterministic implementation without touching this route.
-  const concepts: Concept[] = await getProvider().extractConcepts({
+  // Extraction goes through the EXTRACTION resolver only. Changing the grading
+  // provider can never change what this route extracts.
+  const concepts: Concept[] = await getExtractionProvider().extractConcepts({
     courseId,
     lectureId,
     document: { id: document.id, lectureId, title: document.title, pages: document.pages },

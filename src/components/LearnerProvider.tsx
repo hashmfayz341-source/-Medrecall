@@ -42,6 +42,15 @@ interface LearnerContextValue {
   /** False until localStorage has been read on the client. */
   ready: boolean;
   setLearner: (next: LearnerState) => void;
+  /**
+   * The freshest curriculum and learner state available right now: what is
+   * persisted (so another tab's writes are seen even before its storage event
+   * arrives), quarantine-filtered, falling back to this tab's memory. Used to
+   * apply an asynchronous grade to current state rather than a stale render.
+   */
+  snapshot: () => { curriculum: Curriculum; learner: LearnerState };
+  /** Re-read both stores into this tab, as a storage event would. */
+  syncFromStorage: () => void;
   updateConceptStatus: (conceptId: string, status: ConceptStatus) => void;
   updateConceptStatuses: (conceptIds: readonly string[], status: ConceptStatus) => void;
   updateConceptText: (conceptId: string, edit: ConceptEdit) => void;
@@ -71,6 +80,9 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
 
   const learnerRepo = useRef(new LocalStorageLearnerRepository());
   const curriculumRepo = useRef(new LocalStorageCurriculumRepository());
+  // When a write fails, storage no longer holds this tab's latest state, so
+  // snapshots must come from memory instead.
+  const lastSaveFailed = useRef(false);
 
   /** Filter incoming learner state, persist and report any quarantine. */
   const acceptLearnerState = useCallback(
@@ -93,30 +105,12 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
-  // Hydrate from storage after mount so server and client markup agree.
-  useEffect(() => {
-    const storedLearner = learnerRepo.current.load();
-    const storedOverrides = curriculumRepo.current.load();
-
-    if (storedOverrides) {
-      overridesRef.current = storedOverrides;
-      setOverrides(storedOverrides);
-    }
-
-    if (storedLearner) {
-      // Progress recorded against a colliding legacy document identity may
-      // belong to a different PDF entirely, so it is discarded once rather
-      // than silently carried into re-approved material.
-      acceptLearnerState(storedLearner, storedOverrides);
-    }
-
-    setReady(true);
-    function onStorage(event: StorageEvent) {
-      const curriculumChanged =
-        event.key === CURRICULUM_STORAGE_KEY || event.key === null;
-      const learnerChanged = event.key === STORAGE_KEY || event.key === null;
-      if (!curriculumChanged && !learnerChanged) return;
-
+  /**
+   * Pull both stores into this tab. Shared by the storage event and by
+   * `syncFromStorage()`.
+   */
+  const sync = useCallback(
+    (curriculumChanged: boolean) => {
       // Always refresh curriculum first: the quarantine decision depends on
       // which document identities are currently known to be untrusted.
       const latestOverrides = curriculumRepo.current.load();
@@ -142,6 +136,38 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
         learnerRepo.current.load() ?? learnerRef.current,
         overridesRef.current,
       );
+    },
+    [acceptLearnerState],
+  );
+  const syncRef = useRef(sync);
+  useEffect(() => {
+    syncRef.current = sync;
+  }, [sync]);
+
+  // Hydrate from storage after mount so server and client markup agree.
+  useEffect(() => {
+    const storedLearner = learnerRepo.current.load();
+    const storedOverrides = curriculumRepo.current.load();
+
+    if (storedOverrides) {
+      overridesRef.current = storedOverrides;
+      setOverrides(storedOverrides);
+    }
+
+    if (storedLearner) {
+      // Progress recorded against a colliding legacy document identity may
+      // belong to a different PDF entirely, so it is discarded once rather
+      // than silently carried into re-approved material.
+      acceptLearnerState(storedLearner, storedOverrides);
+    }
+
+    setReady(true);
+    function onStorage(event: StorageEvent) {
+      const curriculumChanged =
+        event.key === CURRICULUM_STORAGE_KEY || event.key === null;
+      const learnerChanged = event.key === STORAGE_KEY || event.key === null;
+      if (!curriculumChanged && !learnerChanged) return;
+      syncRef.current(curriculumChanged);
     }
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
@@ -149,8 +175,28 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
 
   const setLearner = useCallback((next: LearnerState) => {
     setLearnerState(next);
-    if (!learnerRepo.current.save(next)) setStorageError(true);
+    learnerRef.current = next;
+    const saved = learnerRepo.current.save(next);
+    lastSaveFailed.current = !saved;
+    if (!saved) setStorageError(true);
   }, []);
+
+  const snapshot = useCallback(() => {
+    if (lastSaveFailed.current) {
+      return {
+        curriculum: applyOverrides(pathologyCurriculum, overridesRef.current),
+        learner: learnerRef.current,
+      };
+    }
+    const overrides = curriculumRepo.current.load() ?? overridesRef.current;
+    const stored = learnerRepo.current.load() ?? learnerRef.current;
+    return {
+      curriculum: applyOverrides(pathologyCurriculum, overrides),
+      learner: acceptIncomingLearnerState(stored, overrides).learner,
+    };
+  }, []);
+
+  const syncFromStorage = useCallback(() => sync(true), [sync]);
 
   /** Apply a change to curriculum state and persist it in one step. */
   const mutate = useCallback(
@@ -194,6 +240,7 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
 
   const resetAll = useCallback(() => {
     const fresh = createLearnerState();
+    lastSaveFailed.current = false;
     learnerRepo.current.clear();
     curriculumRepo.current.clear();
     setLearnerState(fresh);
@@ -214,6 +261,8 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
       learner,
       ready,
       setLearner,
+      snapshot,
+      syncFromStorage,
       updateConceptStatus,
       updateConceptStatuses,
       updateConceptText,
@@ -226,6 +275,8 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
       learner,
       ready,
       setLearner,
+      snapshot,
+      syncFromStorage,
       updateConceptStatus,
       updateConceptStatuses,
       updateConceptText,

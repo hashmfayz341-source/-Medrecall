@@ -21,25 +21,28 @@ export type GatedStage =
   | "interleaving"
   | "today";
 
-export function isActive(concept: Concept): boolean {
+/** The only fields the gate reads. Narrow so slices of a Concept can be gated too. */
+export type Gateable = Pick<Concept, "id" | "status">;
+
+export function isActive(concept: Gateable): boolean {
   return concept.status === "ACTIVE";
 }
 
 /** Throws unless the concept is ACTIVE. Use at every entry point to a stage. */
-export function assertActive(concept: Concept, stage: GatedStage): void {
+export function assertActive(concept: Gateable, stage: GatedStage): void {
   if (!isActive(concept)) {
     throw new ConceptNotActiveError(concept.id, concept.status, stage);
   }
 }
 
 /** Filters a list down to the concepts allowed into the learning system. */
-export function activeOnly(concepts: readonly Concept[]): Concept[] {
+export function activeOnly<T extends Gateable>(concepts: readonly T[]): T[] {
   return concepts.filter(isActive);
 }
 
 /** Throws if ANY concept in the list is not ACTIVE. */
 export function assertAllActive(
-  concepts: readonly Concept[],
+  concepts: readonly Gateable[],
   stage: GatedStage,
 ): void {
   for (const concept of concepts) {

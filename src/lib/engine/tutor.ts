@@ -1,7 +1,17 @@
 import { activeOnly, assertActive, isActive } from "@/lib/domain/gate";
-import { LectureLockedError } from "@/lib/domain/errors";
+import {
+  InvalidGradeError,
+  ItemConceptMismatchError,
+  LectureLockedError,
+  StaleAttemptError,
+} from "@/lib/domain/errors";
 import { applyRetrievalToMastery, createProgress } from "@/lib/domain/mastery";
-import { gradeAnswer, type GradeResult } from "@/lib/grading";
+import {
+  gradeAnswer,
+  isValidGradeResult,
+  sanitizeGradeResult,
+  type GradeResult,
+} from "@/lib/grading";
 import { isDue, newSchedule, scheduleAfterAttempt } from "./scheduler";
 import { scoreConcept } from "./priority";
 import type {
@@ -370,7 +380,8 @@ export type SessionStep =
  * The learner never chooses what to do next; this does.
  *
  * Pure: it reads state and returns the next step without mutating anything.
- * State only advances through `markChunkTaught` and `recordAttempt`.
+ * State only advances through `markChunkTaught` and `recordGradedAttempt`
+ * (or its deterministic wrapper `recordAttempt`).
  */
 export function getNextStep(
   curriculum: Curriculum,
@@ -516,6 +527,13 @@ export interface AttemptInput {
   now: Date;
 }
 
+/**
+ * Everything the engine needs to fold an ALREADY-GRADED attempt into state.
+ * The answer text is deliberately absent: by this point the assessment has
+ * been made, and the engine must not re-grade or second-guess it.
+ */
+export type GradedAttemptInput = Omit<AttemptInput, "answer">;
+
 export interface AttemptResult {
   learner: LearnerState;
   grade: GradeResult;
@@ -525,32 +543,174 @@ export interface AttemptResult {
 }
 
 /**
- * Grade one answer and fold the result into learner state: mastery, FSRS
- * schedule, interleaving bookkeeping and derived completion, in one step.
+ * Resolve the concept and item for an attempt, enforcing the approval gate
+ * and that the item really is a representation of that concept.
  */
-export function recordAttempt(
+export function resolveAttemptTarget(
   curriculum: Curriculum,
-  learner: LearnerState,
-  input: AttemptInput,
-): AttemptResult {
-  const concept = getConcept(curriculum, input.conceptId);
+  conceptId: string,
+  itemId: string,
+): { concept: Concept; item: RetrievalItem } {
+  const concept = getConcept(curriculum, conceptId);
 
   // The approval gate, enforced in the domain layer rather than the UI.
   assertActive(concept, "retrieval");
 
-  const item = getItem(concept, input.itemId);
-  const grade = gradeAnswer(item, input.answer);
+  const item = getItem(concept, itemId);
+  if (item.conceptId !== concept.id) {
+    throw new ItemConceptMismatchError(concept.id, item.id);
+  }
+  return { concept, item };
+}
+
+/**
+ * The exact content a grade was computed against: the concept's identity,
+ * wording, status and provenance, and the retrieval item's prompt, rubric and
+ * explanation. Deterministic — an array, so field order is fixed — and
+ * compared as a whole string, so any change at all is detected.
+ */
+export function gradingTargetFingerprint(concept: Concept, item: RetrievalItem): string {
+  return JSON.stringify([
+    concept.id,
+    concept.courseId,
+    concept.lectureId,
+    concept.title,
+    concept.summary,
+    concept.status,
+    concept.source.courseId,
+    concept.source.lectureId,
+    concept.source.documentId,
+    concept.source.pageNumber,
+    concept.source.excerpt,
+    item.id,
+    item.conceptId,
+    item.kind,
+    item.prompt,
+    item.requiredKeywords,
+    item.acceptableAnswers,
+    item.explanation,
+  ]);
+}
+
+/**
+ * What an asynchronous attempt was made against, captured when the learner
+ * submits. Checked again when the grade arrives (optimistic concurrency): if
+ * the question or this concept's progress has moved on, the grade is stale.
+ */
+export interface AttemptPrecondition {
+  conceptId: string;
+  itemId: string;
+  /** This concept's progress version at submission. */
+  totalAttempts: number;
+  lastAttemptAt: string | null;
+  lastReview: string | null;
+  /** `gradingTargetFingerprint()` at submission. */
+  target: string;
+}
+
+/** Capture the precondition for an attempt. Gated: DRAFT/DISCARDED throw. */
+export function captureAttemptPrecondition(
+  curriculum: Curriculum,
+  learner: LearnerState,
+  conceptId: string,
+  itemId: string,
+): AttemptPrecondition {
+  const { concept, item } = resolveAttemptTarget(curriculum, conceptId, itemId);
+  const progress = learner.progress[concept.id];
+  return {
+    conceptId: concept.id,
+    itemId: item.id,
+    totalAttempts: progress?.totalAttempts ?? 0,
+    lastAttemptAt: progress?.lastAttemptAt ?? null,
+    lastReview: progress?.schedule.last_review ?? null,
+    target: gradingTargetFingerprint(concept, item),
+  };
+}
+
+function assertPreconditionHolds(
+  concept: Concept,
+  item: RetrievalItem,
+  learner: LearnerState,
+  input: GradedAttemptInput,
+  expected: AttemptPrecondition,
+): void {
+  if (expected.conceptId !== concept.id || expected.itemId !== item.id) {
+    throw new StaleAttemptError("TARGET_MISMATCH");
+  }
+  // Graded against a different question, rubric or source than exists now.
+  if (gradingTargetFingerprint(concept, item) !== expected.target) {
+    throw new StaleAttemptError("TARGET_CHANGED");
+  }
+  // This concept was attempted (here or in another tab) since submission.
+  const progress = learner.progress[concept.id];
+  if (
+    (progress?.totalAttempts ?? 0) !== expected.totalAttempts ||
+    (progress?.lastAttemptAt ?? null) !== expected.lastAttemptAt ||
+    (progress?.schedule.last_review ?? null) !== expected.lastReview
+  ) {
+    throw new StaleAttemptError("PROGRESS_CHANGED");
+  }
+  // FSRS must never be run with an attempt time older than the card's last
+  // review or the concept's last attempt.
+  const at = input.now.getTime();
+  for (const stamp of [progress?.schedule.last_review, progress?.lastAttemptAt]) {
+    if (stamp && new Date(stamp).getTime() > at) {
+      throw new StaleAttemptError("OUT_OF_ORDER");
+    }
+  }
+}
+
+/**
+ * Fold one already-graded attempt into learner state: mastery, FSRS schedule,
+ * interleaving bookkeeping and derived completion, in one pure step.
+ *
+ * GRADING DECISION != STATE MUTATION. Whoever produced `grade` (the
+ * deterministic grader today, a model later) decided only the assessment. What
+ * that assessment does to mastery and scheduling is decided here, by the same
+ * deterministic rules regardless of who graded. This function never calls a
+ * provider or the network, and it validates the gate, the grade and — when a
+ * `precondition` is given — that the question and this concept's progress are
+ * still exactly what the grade was made against, all before touching
+ * anything. On any failure it throws and the caller's state is unchanged.
+ *
+ * Asynchronous callers MUST pass the precondition captured at submission.
+ *
+ * PARTIAL is not yet given credit: until its mastery policy exists, only
+ * outcome "CORRECT" counts as a success.
+ */
+export function recordGradedAttempt(
+  curriculum: Curriculum,
+  learner: LearnerState,
+  input: GradedAttemptInput,
+  grade: GradeResult,
+  precondition?: AttemptPrecondition,
+): AttemptResult {
+  const { concept, item } = resolveAttemptTarget(
+    curriculum,
+    input.conceptId,
+    input.itemId,
+  );
+
+  if (precondition) {
+    assertPreconditionHolds(concept, item, learner, input, precondition);
+  }
+
+  if (!isValidGradeResult(grade)) {
+    throw new InvalidGradeError("grade failed structural validation");
+  }
+  const accepted = sanitizeGradeResult(grade);
+  const correct = accepted.outcome === "CORRECT";
 
   const before = ensureProgress(learner, concept.id, input.now);
   const afterMastery = applyRetrievalToMastery(before, {
-    correct: grade.correct,
+    correct,
     context: input.context,
     at: input.now.toISOString(),
   });
   const schedule = scheduleAfterAttempt(
     concept,
     before,
-    grade.correct,
+    correct,
     input.context,
     input.now,
   );
@@ -570,7 +730,37 @@ export function recordAttempt(
     injectedByChunk,
   });
 
-  return { learner: next, grade, progress, concept, item };
+  return { learner: next, grade: accepted, progress, concept, item };
+}
+
+/**
+ * Deterministic compatibility wrapper: grade locally with `gradeAnswer`, then
+ * fold the result in through `recordGradedAttempt`.
+ *
+ * The app no longer uses this on the learner's path — answers are graded by
+ * the server — but it is the oracle the server-boundary flow is tested
+ * against, and it keeps internal callers and regression tests working.
+ */
+export function recordAttempt(
+  curriculum: Curriculum,
+  learner: LearnerState,
+  input: AttemptInput,
+): AttemptResult {
+  // Gate before grading: a non-ACTIVE concept is never assessed at all.
+  const { item } = resolveAttemptTarget(curriculum, input.conceptId, input.itemId);
+  const grade = gradeAnswer(item, input.answer);
+  return recordGradedAttempt(
+    curriculum,
+    learner,
+    {
+      conceptId: input.conceptId,
+      itemId: input.itemId,
+      context: input.context,
+      chunkId: input.chunkId,
+      now: input.now,
+    },
+    grade,
+  );
 }
 
 /* ------------------------------------------------------------------ */

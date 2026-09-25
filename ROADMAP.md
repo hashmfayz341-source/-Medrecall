@@ -47,12 +47,53 @@ A complete tutor running with no AI key.
 - OCR for scanned PDFs — rejected with an explicit message instead
 - Creating additional courses (lectures can be created; the course is fixed)
 
-## Milestone 3 — Model-graded free recall
+## Milestone 3 — Model-graded free recall (in progress)
 
-- [ ] `gradeFreeAnswer()` routed to a provider, server-side only
-- [ ] Deterministic grading retained as fallback and regression oracle
-- [ ] Partial-credit grading feeding a finer mastery signal
-- [ ] Model-generated remediation grounded strictly in the source excerpt
+### Stage A — server-side grading boundary (implemented, awaiting review)
+
+- [x] Grading runs server-side behind `POST /api/grade`, not in the browser.
+      Remediation is composed on the server from reviewed material (AD-19,
+      AD-21)
+- [x] Engine split: pure `recordGradedAttempt()` applies an already-computed
+      grade; `recordAttempt()` kept as the deterministic wrapper
+- [x] `GradeOutcome` (`INCORRECT | PARTIAL | CORRECT`) with `correct` kept for
+      compatibility and true only for `CORRECT`
+- [x] Narrow, strictly validated grading payload: no client-supplied prompts,
+      approval gate enforced at the boundary
+- [x] Failed or malformed grading causes zero learner mutation, and double
+      submits record one attempt
+- [x] Deterministic parity with the pre-boundary flow, tested step by step
+- [x] Deterministic grading retained as fallback and regression oracle
+- [x] Stale asynchronous grades refused: attempt precondition with progress
+      version and grading-target fingerprint (AD-20)
+- [x] Providers grade against `{ concept, item, answer }`, including the
+      verbatim source excerpt
+- [x] Remediation composed from reviewed material only, never provider prose
+      (AD-21)
+- [x] Hosted providers refused by both role resolvers until abuse control
+      exists (AD-22)
+- [x] Grading and extraction providers resolved separately
+      (`getGradingProvider()`, `getExtractionProvider()`), so a hosted grader
+      cannot change ingestion (AD-23)
+
+### Stage B prerequisites (must land before any hosted provider)
+
+- [ ] **Server-side abuse control** on every route that calls a paid provider:
+      authentication, per-user or per-IP rate limiting and a spend quota, or
+      equivalent. Until curriculum is server-side, the route cannot verify
+      ACTIVE status or the rubric, so anyone can call it.
+      `HOSTED_PROVIDER_SAFEGUARDS.abuseControl` is flipped only in that
+      change.
+
+### Later stages
+
+- [ ] A hosted model **grader**, as a `GradingProvider` adapter behind
+      `getGradingProvider()` only (after the prerequisite above). Extraction
+      stays deterministic unless changed in its own reviewed stage.
+- [ ] PARTIAL mastery policy (partial credit feeding a finer mastery signal)
+- [ ] Richer remediation beyond reviewed material. This needs a structured
+      grounding contract first. Checking that text "contains the excerpt" is
+      not grounding (AD-21).
 - [ ] Disagreement logging between deterministic and model grading
 
 ## Milestone 4 — Accounts and sync

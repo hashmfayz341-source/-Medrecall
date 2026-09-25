@@ -2,22 +2,26 @@ import { gradeAnswer, type GradeResult } from "@/lib/grading";
 import { generateCandidates } from "@/lib/ingestion/extractor";
 import { assertActive, assertAllActive } from "@/lib/domain/gate";
 import type { Concept, RetrievalItem } from "@/lib/domain/types";
+import { composeRemediation } from "@/lib/grading/remediation";
+import type { GradingConcept } from "@/lib/grading/request";
 import type {
   AiProvider,
   ExtractConceptsInput,
-  RemediationInput,
+  GradeFreeAnswerInput,
   TeachingInput,
 } from "./provider";
 
 /**
  * The deterministic provider: authored behaviour, no API key, no network.
  *
- * It implements the same interface a model-backed provider will, so swapping
- * one in later is a single binding change in `getProvider()` — and this
- * implementation stays as the offline fallback and the test oracle.
+ * It fills BOTH provider roles today, each through its own resolver
+ * (`getGradingProvider()`, `getExtractionProvider()`). A hosted model can
+ * later replace one role without touching the other, and this implementation
+ * stays as the offline fallback and the test oracle.
  */
 export class DeterministicProvider implements AiProvider {
   readonly name = "deterministic";
+  readonly hosted = false;
 
   /**
    * Extract candidate concepts from a document's pages.
@@ -48,25 +52,23 @@ export class DeterministicProvider implements AiProvider {
     return concept.retrievalItems;
   }
 
-  async gradeFreeAnswer(
-    item: RetrievalItem,
-    answer: string,
-  ): Promise<GradeResult> {
-    return gradeAnswer(item, answer);
+  /** Keyword-rubric grading. Uses only the item; the concept is not needed. */
+  async gradeFreeAnswer(input: GradeFreeAnswerInput): Promise<GradeResult> {
+    return gradeAnswer(input.item, input.answer);
   }
 
-  async generateRemediation(input: RemediationInput): Promise<string> {
-    const { concept, item, grade } = input;
-    assertActive(concept, "teaching");
-    const missing = grade.missing.filter(Boolean);
-    const gap =
-      missing.length > 0
-        ? `Your answer did not mention: ${missing.join(", ")}.`
-        : "Your answer was close, but incomplete.";
-    return [
-      gap,
-      item.explanation,
-      `Source: ${concept.source.documentId}, page ${concept.source.pageNumber} — "${concept.source.excerpt}"`,
-    ].join("\n\n");
+  /**
+   * @deprecated Compatibility alias for `composeRemediation()`, kept only so
+   * pre-Stage-A tests keep compiling. This is NOT a provider hook: it is not
+   * part of any provider interface, the grading service never calls it, and
+   * no provider writes remediation. Use `composeRemediation()` directly.
+   */
+  async generateRemediation(input: {
+    concept: GradingConcept;
+    item: RetrievalItem;
+    grade: GradeResult;
+    learnerAnswer?: string;
+  }): Promise<string> {
+    return composeRemediation(input);
   }
 }

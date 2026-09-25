@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useLearner } from "./LearnerProvider";
 import { Button, ButtonLink, Card, MasteryBadge, SourceRefLine } from "./ui";
@@ -8,14 +8,23 @@ import {
   getNextStep,
   isLectureUnlocked,
   markChunkTaught,
-  recordAttempt,
   type SessionStep,
 } from "@/lib/engine/tutor";
-import { DeterministicProvider } from "@/lib/ai";
 import type { Concept, RetrievalItem, RetrievalContext } from "@/lib/domain/types";
 import type { GradeResult } from "@/lib/grading";
+import { requestGrade } from "@/lib/grading/client";
+import { GRADE_REQUEST_LIMITS } from "@/lib/grading/request";
+import {
+  STALE_MESSAGE,
+  createSubmitGuard,
+  submitAnswer,
+} from "@/lib/session/submitAnswer";
 
-const provider = new DeterministicProvider();
+/*
+ * No AI provider is imported here. Answers are graded by POST /api/grade on
+ * the server; this component only applies an already-validated grade through
+ * the deterministic engine.
+ */
 
 interface Feedback {
   grade: GradeResult;
@@ -28,9 +37,26 @@ interface Feedback {
 }
 
 export function LearnSession({ lectureId }: { lectureId: string }) {
-  const { curriculum, learner, setLearner, ready } = useLearner();
+  const { curriculum, learner, setLearner, snapshot, syncFromStorage, ready } = useLearner();
   const [answer, setAnswer] = useState("");
   const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [gradeError, setGradeError] = useState<{
+    message: string;
+    retryable: boolean;
+    /** The question it belongs to, so it never shows against a different one. */
+    itemId: string;
+  } | null>(null);
+  /** A grade arrived for a question that had changed; nothing was recorded. */
+  const [stale, setStale] = useState(false);
+  const guard = useRef(createSubmitGuard());
+  // The state the learner is looking at. The attempt's precondition is
+  // captured from this — what they actually answered — while the grade is
+  // applied to the freshest persisted state via `snapshot()`.
+  const latest = useRef({ curriculum, learner });
+  useEffect(() => {
+    latest.current = { curriculum, learner };
+  }, [curriculum, learner]);
 
   const exists = curriculum.course.lectures.some((lecture) => lecture.id === lectureId);
   const unlocked = ready && exists && isLectureUnlocked(curriculum, learner, lectureId);
@@ -96,34 +122,79 @@ export function LearnSession({ lectureId }: { lectureId: string }) {
   if (!step) return null;
 
   async function submit(concept: Concept, item: RetrievalItem, context: RetrievalContext, chunkId?: string) {
-    const result = recordAttempt(curriculum, learner, {
-      conceptId: concept.id,
-      itemId: item.id,
-      answer,
-      context,
-      chunkId,
-      now: new Date(),
-    });
-    const remediation = await provider.generateRemediation({
-      concept,
-      item,
-      grade: result.grade,
-      learnerAnswer: answer,
-    });
-    setLearner(result.learner);
-    setFeedback({
-      grade: result.grade,
-      concept,
-      item,
-      context,
-      remediation,
-      stillWeak: result.grade.correct && result.progress.mastery === "WEAK",
+    const submitted = answer;
+    await guard.current.run(async () => {
+      setSubmitting(true);
+      setGradeError(null);
+      try {
+        const outcome = await submitAnswer({
+          curriculum: latest.current.curriculum,
+          learner: latest.current.learner,
+          attempt: { conceptId: concept.id, itemId: item.id, context, chunkId, now: new Date() },
+          answer: submitted,
+          transport: (request) => requestGrade(request),
+          latest: snapshot,
+        });
+        if (!outcome.ok && outcome.reason === "STALE") {
+          // Not applied, not an error to retry: the question moved on.
+          setStale(true);
+          syncFromStorage();
+          return;
+        }
+        if (!outcome.ok) {
+          // Nothing was recorded: no mastery, schedule or progress change.
+          setGradeError({
+            message: outcome.message,
+            retryable: outcome.retryable,
+            itemId: item.id,
+          });
+          return;
+        }
+        const { result } = outcome;
+        latest.current = { curriculum: latest.current.curriculum, learner: result.learner };
+        setLearner(result.learner);
+        setFeedback({
+          grade: result.grade,
+          concept,
+          item,
+          context,
+          remediation: outcome.remediation ?? "",
+          stillWeak: result.grade.correct && result.progress.mastery === "WEAK",
+        });
+      } finally {
+        setSubmitting(false);
+      }
     });
   }
 
   function next() {
     setFeedback(null);
     setAnswer("");
+    setGradeError(null);
+  }
+
+  function continueAfterStale() {
+    setStale(false);
+    setGradeError(null);
+    setAnswer("");
+    syncFromStorage();
+  }
+
+  /* ---------------- Stale grade view ---------------- */
+  if (stale) {
+    return (
+      <Shell>
+        <Card data-testid="grade-stale" role="alert">
+          <h1 className="text-2xl font-bold text-ink-800">This question has moved on</h1>
+          <p className="prose-teach mt-3 text-ink-600">{STALE_MESSAGE}</p>
+          <div className="mt-6">
+            <Button data-testid="grade-stale-continue" onClick={continueAfterStale}>
+              Continue to the current question
+            </Button>
+          </div>
+        </Card>
+      </Shell>
+    );
   }
 
   /* ---------------- Feedback view ---------------- */
@@ -401,20 +472,47 @@ export function LearnSession({ lectureId }: { lectureId: string }) {
           data-testid="answer-input"
           value={answer}
           onChange={(e) => setAnswer(e.target.value)}
+          maxLength={GRADE_REQUEST_LIMITS.maxAnswerChars}
+          readOnly={submitting}
           rows={5}
           placeholder="Write what you remember, in your own words…"
           className="mt-5 w-full rounded-xl border border-ink-300 bg-white p-5 text-lg leading-relaxed text-ink-800 outline-none focus:border-clinical-500 focus:ring-2 focus:ring-clinical-200"
         />
 
+        {gradeError && gradeError.itemId === step.item.id && (
+          <div
+            role="alert"
+            data-testid="grade-error"
+            className="mt-5 rounded-xl border border-red-200 bg-red-50 p-5 text-[0.95rem] leading-relaxed text-red-800"
+          >
+            <p>{gradeError.message}</p>
+            {gradeError.retryable && (
+              <div className="mt-4">
+                <Button
+                  data-testid="grade-retry"
+                  variant="secondary"
+                  disabled={submitting || answer.trim().length === 0}
+                  onClick={() =>
+                    submit(step.concept, step.item, step.context, step.chunk.id)
+                  }
+                >
+                  Try again
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="mt-6 flex flex-wrap items-center gap-3">
           <Button
             data-testid="submit-answer"
-            disabled={answer.trim().length === 0}
+            disabled={submitting || answer.trim().length === 0}
+            aria-busy={submitting}
             onClick={() =>
               submit(step.concept, step.item, step.context, step.chunk.id)
             }
           >
-            Submit answer
+            {submitting ? "Grading…" : "Submit answer"}
           </Button>
           <Link
             href="/"
