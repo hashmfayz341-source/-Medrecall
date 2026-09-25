@@ -708,7 +708,32 @@ card of a note separately.
   the graded-answer `ratingFor`, which is untouched and never produces Easy.
 - **Interval previews** (`previewRatings`) are pure.
 - **Concept schedule untouched.** The concept-level `ConceptProgress.schedule`
-  used by the tutor is not advanced by card study.
+  used by the tutor is not advanced by card study. Advancing it for every
+  sibling-card rating would over-advance the concept, since several cards of
+  one concept can be rated in one session.
+
+**Invariant: card FSRS and tutor concept FSRS are distinct.**
+
+- **Card study may update shared concept mastery.**
+- **A never-reviewed concept schedule is not a tutor schedule.** Card study
+  can create a concept's progress record, with an untouched schedule whose
+  `due` is its creation time. That placeholder must never count as a due tutor
+  review.
+- **`isDue` enforces this.** It returns true only when the concept schedule
+  has recorded at least one concept-level FSRS review (`schedule.reps > 0`)
+  and is due. It is used by the Today queue, the priority score and
+  cross-lecture interleaving.
+- **Why `reps > 0` is the right test** (verified against ts-fsrs 5.4.2):
+  - An empty card has `reps` 0; any review makes it at least 1.
+  - Every tutor attempt runs FSRS, so tutor-scheduled concepts are unaffected.
+    The independent tutor-parity oracle, 2,033 attempts against `main`, is
+    byte-identical.
+  - A placeholder schedule later reviewed by the tutor schedules exactly as a
+    fresh one would.
+- **WEAK still surfaces regardless of due state**, so a card rated Again
+  appears in Today and can be interleaved.
+- **Where card-level due lives.** A card studied Good or Easy is due in Study
+  (its own schedule), not in the tutor's Due recall.
 
 **Mastery semantics (`applySelfRatingToMastery`).** The context comes from the
 card's FSRS state before the rating, never from the UI:
@@ -737,8 +762,34 @@ Known limitation: a concept with several cards can have WEAK cleared by a
 lapse. This is spaced by FSRS's definition, not by wall-clock time since the
 failure.
 
-**Concurrency.** `captureCardPrecondition` is taken when the answer is shown.
+**Concurrency and content.** `captureCardPrecondition` is taken when the
+answer is shown. It records the card's progress version and
+`gradingTargetFingerprint(concept, item)`. That is the same definition that
+protects graded attempts (AD-20), so the two cannot drift. It covers:
+
+- the concept's identity, title, summary and status;
+- the full `SourceRef`;
+- the item's id, kind, prompt, rubric, accepted answers and explanation.
+
 The rating is applied to the freshest persisted state and refused with
-`StaleAttemptError` if the card was rated since (another tab, or a repeated
-tap), so one showing yields at most one review. FSRS is never run backwards.
+`StaleAttemptError`, before any mastery or FSRS transition, in these cases:
+
+- the card was rated since (another tab, or a repeated tap);
+- its content, source or status changed since Show Answer (`TARGET_CHANGED`);
+- the concept left ACTIVE (`ConceptNotActiveError`).
+
+So one showing yields at most one review, always of the content that was
+shown. FSRS is never run backwards.
+
+**Card identity across edits.** A human edit rebuilds a concept's retrieval
+items as `${conceptId}-r1` / `-r2` (`buildRetrievalItems`):
+
+- **Ingested (PDF) concepts** already use those ids, so their cards keep their
+  ids and FSRS progress across ordinary edits, as in Anki.
+- **Authored demo concepts** start with their own item ids (`c-atp-1`, …). The
+  *first* edit replaces those, so their old card progress no longer matches a
+  card and the rebuilt cards start as New. Concept mastery, keyed by concept
+  id, is kept. Later edits keep the ids stable.
+- **In every case** a rating already in progress against the old content is
+  refused.
 

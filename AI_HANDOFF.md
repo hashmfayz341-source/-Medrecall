@@ -114,6 +114,13 @@ mastery).
 - **Good/Easy only count as spaced success on a Review-state card.** On a card
   re-shown after Again they are immediate re-study and must not clear WEAK.
 - **Never show approval vocabulary in the Study UI.**
+- **Card study never advances the concept-level schedule.** A concept schedule
+  with `reps === 0` (created by card study, never tutor-reviewed) is never
+  tutor-due; `isDue` enforces this. Don't "fix" it by advancing the concept
+  schedule per card rating, because sibling cards would over-advance it.
+- **A card rating is for the content that was shown.**
+  `captureCardPrecondition` includes `gradingTargetFingerprint`, and any edit,
+  source change or status change since Show Answer makes the rating stale.
 
 ## How the session loop works
 
@@ -166,7 +173,7 @@ stable across later weakness; newly approved, unattempted concepts reopen their 
 |---|---|
 | `studyCardsForLecture` | ACTIVE concepts' items, in teaching order; first cards of every concept before second cards |
 | `buildStudyQueue` | New / Learning / Review classification, order, counts, `nextDueAt` |
-| `captureCardPrecondition` | Taken when the answer is shown |
+| `captureCardPrecondition` | Taken when the answer is shown: card version plus content fingerprint |
 | `recordCardRating` | Gate → one FSRS transition (`scheduleAfterRating`) → one mastery transition (`applySelfRatingToMastery`) → reconcile |
 
 UI: `src/components/StudySession.tsx` at `/study/[lectureId]`. Ratings are
@@ -212,7 +219,7 @@ above that interface knows where state lives.
 npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
 ```
 
-394 unit tests, 92 E2E tests (46 per project, iPad and desktop viewports). The E2E suite
+418 unit tests, 98 E2E tests (49 per project, iPad and desktop viewports). The E2E suite
 drives the real UI through the complete demo journey, including the deliberate
 ATP-depletion failure.
 

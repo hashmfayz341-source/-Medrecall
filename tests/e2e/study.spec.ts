@@ -182,3 +182,87 @@ test("uploaded DRAFT candidates are not studyable until approved", async ({ page
   await expect(card).toHaveAttribute("data-concept-id", id);
   await expect(page.getByTestId("card-front")).not.toContainText("unapproved");
 });
+
+test("H1: studying a new card (Good) does not put its concept into the tutor's Due recall", async ({ page }) => {
+  await page.goto(`/study/${L1}`);
+  const concept = (await page.getByTestId("study-card").getAttribute("data-concept-id"))!;
+  await page.getByTestId("show-answer").click();
+  await page.getByTestId("rate-good").click();
+  await expect(page.getByTestId("study-card")).toBeVisible();
+  expect((await stored(page))!.progress[concept]?.totalAttempts).toBe(1);
+
+  await page.goto("/");
+  await expect(page.getByTestId("due-recall")).toContainText("Nothing due");
+});
+
+async function uploadAndApprove(page: Page, name: string) {
+  const pdf = Buffer.from(makePdf([["Edit race", "Hypoxia is the reviewed race statement."]]));
+  await page.goto("/ingest");
+  await page.getByTestId("lecture-select").selectOption(L1);
+  await page.getByTestId("pdf-input").setInputFiles({ name, mimeType: "application/pdf", buffer: pdf });
+  await page.getByTestId("extract-button").click();
+  await expect(page.getByTestId("ingest-result")).toBeVisible();
+  const doc = (await page.getByTestId("ingest-result").getAttribute("data-document-id"))!;
+  const id = `${doc}-p1-c0`;
+  await page.goto(`/concepts?document=${doc}`);
+  await page.getByTestId(`approve-${id}`).click();
+  return { doc, id };
+}
+
+/** Rate other cards Easy until the given concept's card is showing. */
+async function studyUntil(page: Page, conceptId: string) {
+  await page.goto(`/study/${L1}`);
+  for (let i = 0; i < 40; i++) {
+    const card = page.getByTestId("study-card");
+    await expect(card).toBeVisible();
+    if ((await card.getAttribute("data-concept-id")) === conceptId) return;
+    await page.getByTestId("show-answer").click();
+    await page.getByTestId("rate-easy").click();
+  }
+  throw new Error(`never reached ${conceptId}`);
+}
+
+test("M1: a card edited in another tab after Show Answer cannot be rated with the old content", async ({ page, context }) => {
+  const { doc, id } = await uploadAndApprove(page, "edit-race.pdf");
+  await studyUntil(page, id);
+  const item = (await page.getByTestId("study-card").getAttribute("data-item-id"))!;
+  expect(item).toBe(`${id}-r1`);
+  await page.getByTestId("show-answer").click();
+  const before = await rawStored(page);
+
+  // Another tab edits the concept; the card keeps its id (${conceptId}-r1).
+  const review = await context.newPage();
+  await review.goto(`/concepts?document=${doc}`);
+  await review.getByTestId("filter-ACTIVE").click();
+  await review.getByTestId(`title-input-${id}`).fill("Oxygen deficiency");
+  await review.getByTestId(`summary-input-${id}`).fill("Oxygen deficiency is the corrected race statement.");
+  await review.getByTestId(`save-${id}`).click();
+  await review.close();
+
+  await page.getByTestId("rate-good").click();
+  await expect(page.getByTestId("study-notice")).toContainText("changed");
+  expect(await rawStored(page)).toBe(before);
+  const s = (await stored(page))!;
+  expect(s.cards?.[item]).toBeUndefined();
+  expect(s.progress[id]).toBeUndefined();
+});
+
+test("M1: a card returned to DRAFT in another tab after Show Answer cannot be rated", async ({ page, context }) => {
+  const { doc, id } = await uploadAndApprove(page, "draft-race.pdf");
+  await studyUntil(page, id);
+  await page.getByTestId("show-answer").click();
+  const before = await rawStored(page);
+
+  const review = await context.newPage();
+  await review.goto(`/concepts?document=${doc}`);
+  await review.getByTestId("filter-ACTIVE").click();
+  await review.getByTestId(`draft-${id}`).click();
+  await review.close();
+
+  // The draft card leaves the queue; if its buttons are still up, a tap records nothing.
+  if (await page.getByTestId("rate-good").isVisible().catch(() => false)) {
+    await page.getByTestId("rate-good").click();
+  }
+  await expect(page.getByTestId("study-card")).not.toHaveAttribute("data-concept-id", id);
+  expect(await rawStored(page)).toBe(before);
+});

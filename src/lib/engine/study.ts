@@ -19,6 +19,7 @@ import {
   conceptsForLecture,
   ensureProgress,
   getLecture,
+  gradingTargetFingerprint,
   reconcile,
   resolveAttemptTarget,
 } from "./tutor";
@@ -195,14 +196,23 @@ export interface CardRatingInput {
 }
 
 /**
- * The card's version when it was shown. If the same card is rated again from
- * this snapshot — a double tap, or another tab rating it first — the second
- * rating is stale and is refused rather than recorded twice.
+ * What the learner saw when they pressed Show Answer.
+ *
+ * - `reviews` / `lastReviewedAt`: the card's progress version. If the card is
+ *   rated again from this snapshot — a double tap, or another tab rating it
+ *   first — the second rating is stale.
+ * - `target`: `gradingTargetFingerprint()` of the concept and item — identity,
+ *   title, summary, status, full SourceRef, and the item's kind, prompt,
+ *   rubric, accepted answers and explanation. Item ids survive human edits,
+ *   so without this a rating made against the OLD content could be applied
+ *   to NEW content. The same definition protects graded attempts (AD-20), so
+ *   the two cannot drift apart.
  */
 export interface CardRatingPrecondition {
   itemId: string;
   reviews: number;
   lastReviewedAt: string | null;
+  target: string;
 }
 
 export function captureCardPrecondition(
@@ -215,6 +225,7 @@ export function captureCardPrecondition(
     itemId: item.id,
     reviews: progress?.reviews ?? 0,
     lastReviewedAt: progress?.lastReviewedAt ?? null,
+    target: gradingTargetFingerprint(concept, item),
   };
 }
 
@@ -230,7 +241,12 @@ export interface CardRatingResult {
  * matching concept mastery transition, then derived completion. Pure — no
  * network, no React, no provider. Throws before touching anything if the
  * concept is not ACTIVE, the item is not the concept's, the rating is unknown,
- * or the precondition no longer holds.
+ * or the precondition no longer holds (the card was rated since, or its
+ * content changed since Show Answer).
+ *
+ * The concept-level FSRS schedule is NOT advanced here: cards have their own
+ * schedules. A concept whose schedule has never been reviewed by the tutor is
+ * therefore never a due tutor review (see `isDue`).
  */
 export function recordCardRating(
   curriculum: Curriculum,
@@ -251,6 +267,10 @@ export function recordCardRating(
   const previous = cardProgress(learner, concept, item);
   if (precondition) {
     if (precondition.itemId !== item.id) throw new StaleAttemptError("TARGET_MISMATCH");
+    // The card's content, source or status changed since Show Answer.
+    if (gradingTargetFingerprint(concept, item) !== precondition.target) {
+      throw new StaleAttemptError("TARGET_CHANGED");
+    }
     if (
       (previous?.reviews ?? 0) !== precondition.reviews ||
       (previous?.lastReviewedAt ?? null) !== precondition.lastReviewedAt

@@ -87,7 +87,23 @@ export function scheduleAfterAttempt(
   return toScheduleState(result.card);
 }
 
+/**
+ * Whether a concept is a due TUTOR review.
+ *
+ * Invariant: a concept-level schedule is a real tutor schedule only once FSRS
+ * has recorded a concept-level review on it (`reps > 0`). Every tutor attempt
+ * runs FSRS (`scheduleAfterAttempt`), so tutor-scheduled concepts are
+ * unaffected by this rule. Card study keeps its own per-card schedules and
+ * never advances the concept schedule, but it does create the concept's
+ * progress record — with an untouched schedule whose `due` is the moment it
+ * was created. Without this rule that placeholder would masquerade as a
+ * review due immediately (Today queue, priority score, interleaving).
+ *
+ * WEAK concepts still surface regardless of due state wherever callers check
+ * `mastery === "WEAK"` alongside this.
+ */
 export function isDue(progress: ConceptProgress, now: Date): boolean {
+  if (progress.schedule.reps <= 0) return false;
   return new Date(progress.schedule.due).getTime() <= now.getTime();
 }
 

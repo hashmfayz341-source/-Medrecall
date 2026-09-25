@@ -116,9 +116,11 @@ export function StudySession({ lectureId }: { lectureId: string }) {
       setLearner(result.learner);
     } catch (cause) {
       setNotice(
-        cause instanceof StaleAttemptError
-          ? "This card was already reviewed in another tab, so this rating was not recorded."
-          : "This card can no longer be studied — it may have been changed or removed.",
+        cause instanceof StaleAttemptError && cause.reason === "TARGET_CHANGED"
+          ? "This card was changed while you were studying it, so this rating was not recorded. Here it is again."
+          : cause instanceof StaleAttemptError
+            ? "This card was already reviewed in another tab, so this rating was not recorded."
+            : "This card can no longer be studied — it may have been changed or removed.",
       );
       syncFromStorage();
     }
