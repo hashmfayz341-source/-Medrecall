@@ -12,8 +12,14 @@ type Stored = {
   progress: Record<string, { totalAttempts: number; mastery: string }>;
   cards?: Record<string, { reviews: number; lastRating: string; conceptId: string }>;
 };
-const stored = async (page: Page) =>
-  JSON.parse((await page.evaluate((k) => localStorage.getItem(k), LK)) ?? "null") as Stored | null;
+const SK = "medrecall.study-cards.v1";
+/** The learner envelope, with card progress read from where it lives: the Study sidecar. */
+const stored = async (page: Page) => {
+  const [envelope, sidecar] = await page.evaluate(([l, c]) => [localStorage.getItem(l!), localStorage.getItem(c!)], [LK, SK]);
+  const state = JSON.parse(envelope ?? "null") as Stored | null;
+  if (state && sidecar) state.cards = (JSON.parse(sidecar) as { cards: Stored["cards"] }).cards;
+  return state;
+};
 const rawStored = (page: Page) => page.evaluate((k) => localStorage.getItem(k), LK);
 const count = async (page: Page, kind: "new" | "learning" | "review") =>
   Number(await page.getByTestId(`count-${kind}`).textContent());
