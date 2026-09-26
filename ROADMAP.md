@@ -96,6 +96,27 @@ A complete tutor running with no AI key.
       not grounding (AD-21).
 - [ ] Disagreement logging between deterministic and model grading
 
+## Anki experience (product correction: Anki-first learner experience)
+
+### Step 1 — Study session (implemented, awaiting review)
+
+- [x] `/study/[lectureId]`: card front, **Show Answer**, back with source
+      (document, page, excerpt behind "View source")
+- [x] Again / Hard / Good / Easy mapped one-to-one onto FSRS ratings, with
+      interval previews; keyboard 1–4, Space to reveal
+- [x] Per-card FSRS scheduling (`LearnerState.cards`), with concept mastery
+      fed by self-ratings (AD-25)
+- [x] New / Learning / Review queue and counts; due material before new
+- [x] ACTIVE concepts only; duplicate and cross-tab ratings refused
+- [x] Dashboard **Study** entry per lecture
+
+### Later steps (not started)
+
+- [ ] Step 2: decks (management, hierarchy), card browser and editor, tags,
+      suspend/bury, custom study, daily limits and deck options
+- [ ] Later: Image Occlusion, Anki import/export, flashcard-quality extraction
+      (PDF → cards), AI card generation (with its own safeguards)
+
 ## Milestone 4 — Accounts and sync
 
 - [ ] Server-side learner state behind the existing repository interface

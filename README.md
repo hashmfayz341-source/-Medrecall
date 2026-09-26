@@ -1,7 +1,16 @@
 # MedRecall
 
-An adaptive medical curriculum tutor. The fundamental unit of learning is a
-**Concept**, not a flashcard.
+**Anki-first study, concept-aware underneath.** Learners study cards the way an
+Anki user expects:
+
+```
+Card front → Show Answer → back → Again / Hard / Good / Easy → FSRS schedules the next review
+```
+
+Underneath, every card is a representation of a **Concept**, the internal unit
+of knowledge that carries provenance, approval status and mastery. Concepts are
+what make the cards trustworthy (every card cites its source page) and what
+future intelligence builds on; the learner simply studies cards.
 
 MedRecall decides what you study next. It tracks what was learned, what was
 forgotten, what was answered wrongly, what is weak, what is due, and what is
@@ -43,7 +52,32 @@ weakness — only a later spaced or interleaved success does. This is the rule
 most learning apps get wrong, and it is enforced in
 `src/lib/domain/mastery.ts`.
 
+## Studying (Anki-style)
+
+Open a lecture's **Study** button on the dashboard (`/study/<lectureId>`):
+
+- **Front only** until you tap **Show Answer** (or press Space). Revealing
+  records nothing.
+- **Back:** the reviewed answer, plus the source document and page. The
+  verbatim excerpt is one tap away, under **View source**.
+- **Rate** Again / Hard / Good / Easy (or keys 1–4). Each button shows the
+  interval FSRS would give. The rating goes to FSRS as exactly that rating;
+  Easy is never collapsed into Good.
+- **Counts:** New · Learning · Review, derived from your FSRS state. Due
+  learning and review cards come before new ones.
+
+Only ACTIVE (approved) concepts produce cards. Drafts from an upload stay
+out of Study until you approve them in **Review drafts**. The earlier guided
+tutor (`/learn/<lectureId>`, typed answers graded by `/api/grade`) is still
+available.
+
 ## Status
+
+**Anki experience, Step 1: card study.** Implemented, in review. Front/back
+cards, Show Answer, Again/Hard/Good/Easy mapped one-to-one onto FSRS, per-card
+scheduling and New/Learning/Review counts. Decks, the card browser, tags,
+suspend/bury, custom study, import/export and AI card generation are later
+steps.
 
 **Milestone 1 — deterministic tutor.** Complete. **No AI key required.** The
 demo course is Pathology: Cell Injury and Inflammation. The full journey works

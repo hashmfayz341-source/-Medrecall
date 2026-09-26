@@ -10,7 +10,7 @@ app/ components/        React, Next.js — rendering and state wiring only
         ↓ calls
 lib/session/            One learner submission: gate → server grade → engine
         ↓ calls
-lib/engine/             Tutor orchestration, priority, FSRS scheduling
+lib/engine/             Tutor orchestration, card study (study.ts), priority, FSRS
         ↓ calls
 lib/domain/             Pure types, approval gate, mastery rules  (no imports out)
 lib/grading/            Deterministic grading, grade validation, /api/grade wire
@@ -658,4 +658,177 @@ ingestion through the grading resolver failed five of these tests.
 
 **Future implication.** Changing extraction to a model is its own Stage, with
 its own resolver change, safeguards and review.
+
+---
+
+## AD-24 — Anki-first at the learner experience layer; Concept stays internal
+
+**Decision.** The learner studies CARDS in an Anki-style loop: front, **Show
+Answer**, back, then **Again / Hard / Good / Easy**. Each `RetrievalItem` of an
+ACTIVE Concept is one card (`lib/engine/study.ts`, `/study/[lectureId]`). The
+Concept remains the internal semantic entity: it owns approval status,
+`SourceRef` provenance and mastery, and every card cites its concept's source.
+Study UI never shows approval vocabulary (ACTIVE, DRAFT, chunks).
+
+**How it works.**
+
+- `studyCardsForLecture` yields ACTIVE concepts' items only, and skips an item
+  whose `conceptId` is not its concept's.
+- `buildStudyQueue` classifies cards as New, Learning or Review from their FSRS
+  state. It orders due learning, then due review, then new, then learning due
+  within a 20-minute learn-ahead window, and reports counts derived from the
+  same classification.
+- `recordCardRating` is pure. It checks the approval gate and item membership,
+  runs exactly one FSRS transition for the card, applies one concept mastery
+  transition, then reconciles.
+- Revealing the answer records nothing. No grading request is made: the
+  self-rating is the assessment. `/api/grade` and the typed-answer tutor are
+  unchanged and still available.
+
+**Reason.** The product correction: learners expect Anki's interaction model.
+Keeping the Concept underneath preserves everything the earlier milestones
+built: the approval gate, provenance and mastery.
+
+**Tradeoff.** Two study modes coexist, the guided tutor and card study. They
+share concept mastery but not scheduling state (see AD-25). Study is not gated
+by the tutor's lecture-order lock: Anki has no such lock, and only approved
+content is studyable either way.
+
+## AD-25 — FSRS schedules each card; self-ratings feed concept mastery
+
+**Decision.** `LearnerState.cards` (optional, keyed by item id) holds each
+card's own FSRS schedule, review count and last rating, as Anki schedules each
+card of a note separately.
+
+- **Additive.** State saved before card study has no `cards` and loads
+  unchanged. `sanitizeLearnerState` validates card records one by one, and the
+  legacy-identity quarantine also strips card schedules of untrusted concepts.
+- **Ratings map one-to-one** (`FSRS_RATING`): Again→Again, Hard→Hard,
+  Good→Good, Easy→Easy. This is a separate path (`scheduleAfterRating`) from
+  the graded-answer `ratingFor`, which is untouched and never produces Easy.
+- **Interval previews** (`previewRatings`) are pure.
+- **Concept schedule untouched.** The concept-level `ConceptProgress.schedule`
+  used by the tutor is not advanced by card study. Advancing it for every
+  sibling-card rating would over-advance the concept, since several cards of
+  one concept can be rated in one session.
+
+**Invariant: card FSRS and tutor concept FSRS are distinct.**
+
+- **Card study may update shared concept mastery.**
+- **A never-reviewed concept schedule is not a tutor schedule.** Card study
+  can create a concept's progress record, with an untouched schedule whose
+  `due` is its creation time. That placeholder must never count as a due tutor
+  review.
+- **`isDue` enforces this.** It returns true only when the concept schedule
+  has recorded at least one concept-level FSRS review (`schedule.reps > 0`)
+  and is due. It is used by the Today queue, the priority score and
+  cross-lecture interleaving.
+- **Why `reps > 0` is the right test** (verified against ts-fsrs 5.4.2):
+  - An empty card has `reps` 0; any review makes it at least 1.
+  - Every tutor attempt runs FSRS, so tutor-scheduled concepts are unaffected.
+    The independent tutor-parity oracle, 2,033 attempts against `main`, is
+    byte-identical.
+  - A placeholder schedule later reviewed by the tutor schedules exactly as a
+    fresh one would.
+- **WEAK still surfaces regardless of due state**, so a card rated Again
+  appears in Today and can be interleaved.
+- **Where card-level due lives.** A card studied Good or Easy is due in Study
+  (its own schedule), not in the tutor's Due recall.
+
+**Mastery semantics (`applySelfRatingToMastery`).** The context comes from the
+card's FSRS state before the rating, never from the UI:
+
+- **AGAIN:** a failed retrieval. WEAK, streak reset (the existing rule).
+- **HARD:** recalled with difficulty. Counts as an attempt and as correct.
+  Never a spaced success: it does not advance the streak and never clears WEAK.
+  A NEW concept becomes LEARNING.
+- **GOOD / EASY:** success under the existing rules for the card's context.
+  - **New card:** first exposure, NEW→LEARNING.
+  - **Learning/Relearning card:** immediate-remediation success. It does NOT
+    clear WEAK.
+  - **Review card** (came due after an interval): spaced success, which
+    advances the streak and can clear WEAK.
+  - Good and Easy have the same mastery effect; only FSRS differs.
+
+**Conflict with the Step 1 brief, documented.** The brief suggested GOOD
+counts as a successful *spaced* retrieval. Applied to a card re-shown a minute
+after Again (a Relearning step), that would clear WEAK immediately. That
+contradicts AD-4, the product's central rule that recognition straight after
+seeing the answer is not recall. So Good/Easy count as spaced success only for
+a Review-state card.
+
+Known limitation: a concept with several cards can have WEAK cleared by a
+*different* card that happens to be in Review state and due soon after a
+lapse. This is spaced by FSRS's definition, not by wall-clock time since the
+failure.
+
+**Invariant: Study shares mastery with the Tutor, never Tutor evidence.**
+Concept mastery and `totalAttempts` are shared aggregate history. Whether the
+**Tutor** retrieved a concept is answered only by the concept-level FSRS
+schedule, which only Tutor attempts advance: `tutorAttemptCount(progress) =
+schedule.reps` and `hasTutorAttempt(progress) = reps > 0`. For learner state
+from before card study, `reps === totalAttempts`. The independent
+tutor-parity oracle against `main` is byte-identical: 2,273 records covering
+TEACH, INITIAL retrieval, remediation, interleaving, item rotation, FSRS and
+72 lecture completions and unlocks.
+
+Tutor decisions that now require Tutor evidence:
+
+- **Untested detection:** a concept rated only in Study still gets its Tutor
+  RETRIEVE step.
+- **Completion:** chunk completion, `reconcile`'s monotonic-completion and
+  reopen rules, and therefore lecture completion and unlocking. Study ratings
+  alone never complete a chunk or lecture or unlock the next lecture. Chunks
+  legitimately completed through the Tutor stay complete.
+- **Item rotation (`pickItem`):** Study ratings never change which
+  representation the Tutor asks.
+- **Immediate remediation (`pendingRemediation`):** requires a Tutor attempt.
+  `getNextStep` considers only the current lecture and earlier lectures, so a
+  later or locked lecture never interrupts an earlier one. Tutor failures,
+  including INTERLEAVED failures on earlier-lecture concepts, are still
+  re-taught at once.
+
+Deliberately still aggregate:
+
+- the Today queue's WEAK surfacing;
+- interleaving candidates, which come from earlier lectures only;
+- the dashboard's "concepts started";
+- the Tutor's stale-grade precondition, which conservatively treats any rating
+  of the concept as a change.
+
+Defined behaviour: Study AGAIN on a concept the Tutor has already retrieved,
+in the current or an earlier lecture, makes it WEAK with remediation not yet
+passed. The Tutor then re-teaches it on the next Tutor visit. Completion is not
+revoked.
+
+**Concurrency and content.** `captureCardPrecondition` is taken when the
+answer is shown. It records the card's progress version and
+`gradingTargetFingerprint(concept, item)`. That is the same definition that
+protects graded attempts (AD-20), so the two cannot drift. It covers:
+
+- the concept's identity, title, summary and status;
+- the full `SourceRef`;
+- the item's id, kind, prompt, rubric, accepted answers and explanation.
+
+The rating is applied to the freshest persisted state and refused with
+`StaleAttemptError`, before any mastery or FSRS transition, in these cases:
+
+- the card was rated since (another tab, or a repeated tap);
+- its content, source or status changed since Show Answer (`TARGET_CHANGED`);
+- the concept left ACTIVE (`ConceptNotActiveError`).
+
+So one showing yields at most one review, always of the content that was
+shown. FSRS is never run backwards.
+
+**Card identity across edits.** A human edit rebuilds a concept's retrieval
+items as `${conceptId}-r1` / `-r2` (`buildRetrievalItems`):
+
+- **Ingested (PDF) concepts** already use those ids, so their cards keep their
+  ids and FSRS progress across ordinary edits, as in Anki.
+- **Authored demo concepts** start with their own item ids (`c-atp-1`, …). The
+  *first* edit replaces those, so their old card progress no longer matches a
+  card and the rebuilt cards start as New. Concept mastery, keyed by concept
+  id, is kept. Later edits keep the ids stable.
+- **In every case** a rating already in progress against the old content is
+  refused.
 
