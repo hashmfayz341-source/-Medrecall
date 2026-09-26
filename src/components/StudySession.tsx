@@ -101,7 +101,8 @@ export function StudySession({ lectureId }: { lectureId: string }) {
     if (!current || !revealed) return;
     const pre = precondition.current;
     if (!pre || pre.itemId !== current.item.id) return;
-    const key = `${pre.itemId}|${pre.reviews}|${pre.lastReviewedAt ?? ""}`;
+    // Content-aware: the same card id with updated content is a new key.
+    const key = `${pre.itemId}|${pre.reviews}|${pre.lastReviewedAt ?? ""}|${pre.target}`;
     if (rated.current.has(key)) return;
     rated.current.add(key);
 
@@ -115,6 +116,9 @@ export function StudySession({ lectureId }: { lectureId: string }) {
       );
       setLearner(result.learner);
     } catch (cause) {
+      // Nothing was recorded, so this showing must not stay marked as rated:
+      // otherwise a legitimate rating after the card reappears is ignored.
+      rated.current.delete(key);
       setNotice(
         cause instanceof StaleAttemptError && cause.reason === "TARGET_CHANGED"
           ? "This card was changed while you were studying it, so this rating was not recorded. Here it is again."
@@ -137,6 +141,9 @@ export function StudySession({ lectureId }: { lectureId: string }) {
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
+      // Never hijack a focused control: Enter on a link or button, typing in a
+      // field, etc. keep their native behaviour.
+      if (isInteractiveTarget(event.target)) return;
       const h = handlers.current;
       if (!h.revealed && (event.key === " " || event.key === "Enter")) {
         event.preventDefault();
@@ -340,6 +347,16 @@ export function StudySession({ lectureId }: { lectureId: string }) {
         )}
       </div>
     </Shell>
+  );
+}
+
+function isInteractiveTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  if (target instanceof HTMLElement && target.isContentEditable) return true;
+  return (
+    target.closest(
+      'input, textarea, select, button, a[href], summary, [contenteditable]:not([contenteditable="false"]), [role="button"], [role="link"]',
+    ) !== null
   );
 }
 

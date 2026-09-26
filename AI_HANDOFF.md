@@ -118,6 +118,11 @@ mastery).
   with `reps === 0` (created by card study, never tutor-reviewed) is never
   tutor-due; `isDue` enforces this. Don't "fix" it by advancing the concept
   schedule per card rating, because sibling cards would over-advance it.
+- **Tutor evidence comes only from the Tutor.** Use `hasTutorAttempt` /
+  `tutorAttemptCount` (concept `schedule.reps`), never `totalAttempts`, for any
+  Tutor decision: untested, completion, unlocking, rotation, remediation.
+  Study ratings share mastery but must never satisfy a Tutor retrieval, and a
+  later or locked lecture never interrupts an earlier one.
 - **A card rating is for the content that was shown.**
   `captureCardPrecondition` includes `gradingTargetFingerprint`, and any edit,
   source change or status change since Show Answer makes the rating stale.
@@ -219,7 +224,7 @@ above that interface knows where state lives.
 npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
 ```
 
-418 unit tests, 98 E2E tests (49 per project, iPad and desktop viewports). The E2E suite
+429 unit tests, 104 E2E tests (52 per project, iPad and desktop viewports). The E2E suite
 drives the real UI through the complete demo journey, including the deliberate
 ATP-depletion failure.
 

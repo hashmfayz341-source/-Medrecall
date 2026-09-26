@@ -762,6 +762,45 @@ Known limitation: a concept with several cards can have WEAK cleared by a
 lapse. This is spaced by FSRS's definition, not by wall-clock time since the
 failure.
 
+**Invariant: Study shares mastery with the Tutor, never Tutor evidence.**
+Concept mastery and `totalAttempts` are shared aggregate history. Whether the
+**Tutor** retrieved a concept is answered only by the concept-level FSRS
+schedule, which only Tutor attempts advance: `tutorAttemptCount(progress) =
+schedule.reps` and `hasTutorAttempt(progress) = reps > 0`. For learner state
+from before card study, `reps === totalAttempts`. The independent
+tutor-parity oracle against `main` is byte-identical: 2,273 records covering
+TEACH, INITIAL retrieval, remediation, interleaving, item rotation, FSRS and
+72 lecture completions and unlocks.
+
+Tutor decisions that now require Tutor evidence:
+
+- **Untested detection:** a concept rated only in Study still gets its Tutor
+  RETRIEVE step.
+- **Completion:** chunk completion, `reconcile`'s monotonic-completion and
+  reopen rules, and therefore lecture completion and unlocking. Study ratings
+  alone never complete a chunk or lecture or unlock the next lecture. Chunks
+  legitimately completed through the Tutor stay complete.
+- **Item rotation (`pickItem`):** Study ratings never change which
+  representation the Tutor asks.
+- **Immediate remediation (`pendingRemediation`):** requires a Tutor attempt.
+  `getNextStep` considers only the current lecture and earlier lectures, so a
+  later or locked lecture never interrupts an earlier one. Tutor failures,
+  including INTERLEAVED failures on earlier-lecture concepts, are still
+  re-taught at once.
+
+Deliberately still aggregate:
+
+- the Today queue's WEAK surfacing;
+- interleaving candidates, which come from earlier lectures only;
+- the dashboard's "concepts started";
+- the Tutor's stale-grade precondition, which conservatively treats any rating
+  of the concept as a change.
+
+Defined behaviour: Study AGAIN on a concept the Tutor has already retrieved,
+in the current or an earlier lecture, makes it WEAK with remediation not yet
+passed. The Tutor then re-teaches it on the next Tutor visit. Completion is not
+revoked.
+
 **Concurrency and content.** `captureCardPrecondition` is taken when the
 answer is shown. It records the card's progress version and
 `gradingTargetFingerprint(concept, item)`. That is the same definition that

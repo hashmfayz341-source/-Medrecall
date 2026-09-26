@@ -266,3 +266,55 @@ test("M1: a card returned to DRAFT in another tab after Show Answer cannot be ra
   await expect(page.getByTestId("study-card")).not.toHaveAttribute("data-concept-id", id);
   expect(await rawStored(page)).toBe(before);
 });
+
+test("M1 retry: after a stale rejection, the UPDATED card is rateable without reload (exactly one review)", async ({ page, context }) => {
+  const { doc, id } = await uploadAndApprove(page, "retry-race.pdf");
+  await studyUntil(page, id);
+  const item = (await page.getByTestId("study-card").getAttribute("data-item-id"))!;
+  await page.getByTestId("show-answer").click();
+  const before = await rawStored(page);
+
+  const review = await context.newPage();
+  await review.goto(`/concepts?document=${doc}`);
+  await review.getByTestId("filter-ACTIVE").click();
+  await review.getByTestId(`title-input-${id}`).fill("Oxygen deficiency");
+  await review.getByTestId(`summary-input-${id}`).fill("Oxygen deficiency is the corrected retry statement.");
+  await review.getByTestId(`save-${id}`).click();
+  await review.close();
+
+  // Old content: refused, nothing recorded.
+  await page.getByTestId("rate-good").click();
+  await expect(page.getByTestId("study-notice")).toContainText("changed");
+  expect(await rawStored(page)).toBe(before);
+
+  // Updated content: same card id, shown again from the front — and rateable.
+  const card = page.getByTestId("study-card");
+  await expect(card).toHaveAttribute("data-item-id", item);
+  await expect(page.getByTestId("card-back")).toHaveCount(0);
+  await page.getByTestId("show-answer").click();
+  await expect(page.getByTestId("card-back")).toContainText("corrected retry statement");
+  await page.getByTestId("rate-good").click();
+  await expect.poll(async () => (await stored(page))?.cards?.[item]?.reviews ?? 0).toBe(1);
+  expect((await stored(page))!.cards?.[item]?.lastRating).toBe("GOOD");
+});
+
+test("L1: Enter on a focused link navigates natively and does not reveal the card", async ({ page }) => {
+  await page.goto(`/study/${L1}`);
+  await expect(page.getByTestId("study-card")).toBeVisible();
+  const link = page.getByRole("link", { name: "MedRecall" });
+  await link.focus();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/$/);
+  expect((await stored(page))?.cards ?? {}).toEqual({});
+});
+
+test("L1: shortcuts still work when nothing interactive is focused", async ({ page }) => {
+  await page.goto(`/study/${L1}`);
+  const item = (await page.getByTestId("study-card").getAttribute("data-item-id"))!;
+  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("card-back")).toBeVisible();
+  await page.keyboard.press("3");
+  await expect(page.getByTestId("study-card")).not.toHaveAttribute("data-item-id", item);
+  expect((await stored(page))!.cards?.[item]?.lastRating).toBe("GOOD");
+});

@@ -147,13 +147,37 @@ export function ensureProgress(
 }
 
 /**
- * A concept is awaiting immediate remediation when it was just answered wrong
- * and the learner has not yet worked back through the explanation.
+ * Evidence that the TUTOR has retrieved this concept.
+ *
+ * Concept mastery (and `totalAttempts`) is shared by the Tutor and Card Study,
+ * but the concept-level FSRS schedule is advanced ONLY by Tutor attempts
+ * (`scheduleAfterAttempt`); card study keeps its own per-card schedules. So
+ * `schedule.reps` counts Tutor retrievals exactly: every Tutor attempt adds
+ * one (ts-fsrs: an empty card has reps 0 and each review increments it), and
+ * for learner state from before card study existed `reps === totalAttempts`.
+ *
+ * Anything that asks "did the Tutor's own retrieval happen?" — untested
+ * detection, chunk and lecture completion, item rotation, immediate
+ * remediation — must use these, never `totalAttempts`.
+ */
+export function tutorAttemptCount(progress: ConceptProgress | undefined): number {
+  return progress?.schedule.reps ?? 0;
+}
+
+export function hasTutorAttempt(progress: ConceptProgress | undefined): boolean {
+  return tutorAttemptCount(progress) > 0;
+}
+
+/**
+ * A concept is awaiting immediate Tutor remediation when it is WEAK, has not
+ * been worked back through since, and the Tutor has actually retrieved it.
+ * A Study-only failure (no Tutor attempt) never triggers a Tutor REMEDIATE:
+ * the Tutor still teaches and retrieves that concept normally first.
  */
 export function pendingRemediation(progress: ConceptProgress | undefined): boolean {
   if (!progress) return false;
   return (
-    progress.totalAttempts > 0 &&
+    hasTutorAttempt(progress) &&
     progress.mastery === "WEAK" &&
     !progress.immediateRemediationPassed
   );
@@ -201,9 +225,10 @@ function isChunkComplete(
   if (concepts.length === 0) return false;
   return concepts.every((concept) => {
     const progress = learner.progress[concept.id];
+    // Only a Tutor retrieval satisfies a taught chunk; Study ratings never do.
     return (
       progress !== undefined &&
-      progress.totalAttempts > 0 &&
+      hasTutorAttempt(progress) &&
       !pendingRemediation(progress)
     );
   });
@@ -229,10 +254,12 @@ export function reconcile(
     for (const chunk of lecture.chunks) {
       const active = conceptsForChunk(curriculum, chunk);
       const wasComplete = learner.completedChunkIds.includes(chunk.id);
+      // "Attempted" means retrieved by the Tutor. Study ratings alone never
+      // complete a chunk, a lecture, or unlock the next lecture.
       const allAttempted = active.length > 0 && active.every(
-        (c) => (learner.progress[c.id]?.totalAttempts ?? 0) > 0,
+        (c) => hasTutorAttempt(learner.progress[c.id]),
       );
-      if (wasComplete && active.some((c) => !learner.progress[c.id]?.totalAttempts)) {
+      if (wasComplete && active.some((c) => !hasTutorAttempt(learner.progress[c.id]))) {
         taughtChunkIds.delete(chunk.id);
       }
       if ((wasComplete && allAttempted) || isChunkComplete(curriculum, learner, chunk)) {
@@ -276,7 +303,9 @@ export function pickItem(
   const first = items[0]!;
   if (context === "INITIAL") return first;
   if (context === "IMMEDIATE_REMEDIATION") return items[1] ?? first;
-  const attempts = progress?.totalAttempts ?? 0;
+  // Rotate by Tutor attempts only, so Study ratings never change which
+  // representation the Tutor asks next.
+  const attempts = tutorAttemptCount(progress);
   return items[attempts % items.length] ?? first;
 }
 
@@ -406,11 +435,15 @@ export function getNextStep(
   const chunk = approvedChunk(curriculum, sourceChunk);
 
   // A wrong answer is re-taught immediately, before anything else happens.
-  // This is checked across the whole curriculum, not just the current chunk,
-  // so failing an INTERLEAVED question from an earlier lecture also earns
-  // remediation rather than being silently dropped.
-  const toRemediate = activeOnly(curriculum.concepts).find((c) =>
-    pendingRemediation(learner.progress[c.id]),
+  // This is checked across this lecture AND every earlier lecture, so failing
+  // an INTERLEAVED question from an earlier lecture also earns remediation.
+  // A later lecture's material never interrupts an earlier one, and a concept
+  // the Tutor has never retrieved never triggers it (see pendingRemediation).
+  const inTutorScope = new Set(
+    curriculum.course.lectures.filter((l) => l.order <= lecture.order).map((l) => l.id),
+  );
+  const toRemediate = activeOnly(curriculum.concepts).find(
+    (c) => inTutorScope.has(c.lectureId) && pendingRemediation(learner.progress[c.id]),
   );
   if (toRemediate) {
     return {
@@ -484,9 +517,9 @@ export function getNextStep(
 
   const concepts = conceptsForChunk(curriculum, chunk);
 
-  const untested = concepts.find(
-    (c) => (learner.progress[c.id]?.totalAttempts ?? 0) === 0,
-  );
+  // Untested by the TUTOR: a concept rated only in Study still gets its
+  // normal Tutor retrieval.
+  const untested = concepts.find((c) => !hasTutorAttempt(learner.progress[c.id]));
   if (untested) {
     return {
       kind: "RETRIEVE",
