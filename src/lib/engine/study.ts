@@ -20,6 +20,7 @@ import {
   ensureProgress,
   getLecture,
   gradingTargetFingerprint,
+  pendingAfterStudyRating,
   reconcile,
   resolveAttemptTarget,
 } from "./tutor";
@@ -298,7 +299,13 @@ export function recordCardRating(
   };
 
   const conceptBefore = ensureProgress(learner, concept.id, input.now);
-  const conceptAfter = applySelfRatingToMastery(conceptBefore, input.rating, context, at);
+  const rated = applySelfRatingToMastery(conceptBefore, input.rating, context, at);
+  // A Study failure becomes a pending TUTOR remediation only once the Tutor
+  // has retrieved the concept; see pendingAfterStudyRating.
+  const conceptAfter = {
+    ...rated,
+    pendingTutorRemediation: pendingAfterStudyRating(conceptBefore, rated, input.rating),
+  };
 
   const next = reconcile(curriculum, {
     ...learner,

@@ -19,3 +19,9 @@ for page in reader.pages:
 writer.encrypt(user_password="medrecall-user", owner_password="medrecall-owner", algorithm="RC4-128")
 writer.write("tests/fixtures/encrypted.pdf")
 ```
+
+`main-learner-state.ts` is learner state exactly as `main@482824c` (before card
+study) saved it — no `pendingTutorRemediation`, no `cards`. It was captured by
+running that commit's own engine (chunk 1 taught, a wrong Tutor INITIAL answer
+on c-hypoxia, then for `MAIN_REMEDIATED` a correct remediation) and serialising
+the result, and is used to prove such state still migrates correctly.

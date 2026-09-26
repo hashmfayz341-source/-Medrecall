@@ -23,6 +23,7 @@ import type {
   Page,
   RetrievalContext,
   RetrievalItem,
+  SelfRating,
   TeachingChunk,
 } from "@/lib/domain/types";
 
@@ -169,15 +170,85 @@ export function hasTutorAttempt(progress: ConceptProgress | undefined): boolean 
 }
 
 /**
- * A concept is awaiting immediate Tutor remediation when it is WEAK, has not
- * been worked back through since, and the Tutor has actually retrieved it.
- * A Study-only failure (no Tutor attempt) never triggers a Tutor REMEDIATE:
- * the Tutor still teaches and retrieves that concept normally first.
+ * A concept is awaiting immediate Tutor remediation only when that is
+ * explicitly recorded (`pendingTutorRemediation`) — WEAK alone is not enough.
+ *
+ * Mastery is shared with Card Study, so WEAK can come from a Study AGAIN made
+ * before the Tutor ever asked about the concept. Deriving "pending" from WEAK
+ * would turn that old Study failure into a Tutor remediation the moment the
+ * Tutor's first retrieval succeeded. The Tutor evidence and WEAK checks are
+ * kept as guards: the flag is only ever set on a Tutor-retrieved, WEAK concept.
  */
 export function pendingRemediation(progress: ConceptProgress | undefined): boolean {
   if (!progress) return false;
   return (
+    progress.pendingTutorRemediation === true &&
     hasTutorAttempt(progress) &&
+    progress.mastery === "WEAK"
+  );
+}
+
+/**
+ * `pendingTutorRemediation` after a TUTOR attempt (`recordGradedAttempt`):
+ *   - incorrect, in any context            → pending
+ *   - correct IMMEDIATE_REMEDIATION         → cleared (mastery is unchanged —
+ *                                             it still does not clear WEAK)
+ *   - correct INITIAL/SPACED/INTERLEAVED    → unchanged while still WEAK;
+ *                                             cleared once the concept leaves WEAK
+ *
+ * For a Tutor-only learner this reproduces, at every step, exactly what
+ * `schedule.reps > 0 && WEAK && !immediateRemediationPassed` gave before the
+ * flag existed, so pure Tutor behaviour is unchanged.
+ */
+export function pendingAfterTutorAttempt(
+  before: ConceptProgress,
+  after: ConceptProgress,
+  correct: boolean,
+  context: RetrievalContext,
+): boolean {
+  if (!correct) return true;
+  if (context === "IMMEDIATE_REMEDIATION") return false;
+  return before.pendingTutorRemediation && after.mastery === "WEAK";
+}
+
+/**
+ * `pendingTutorRemediation` after a STUDY self-rating (`recordCardRating`):
+ *   - AGAIN on a concept the Tutor has already retrieved → pending (the Tutor
+ *     re-teaches it on the next visit to its lecture or a later one)
+ *   - AGAIN before any Tutor retrieval → NOT pending: the Tutor has not
+ *     covered it yet and will teach and retrieve it normally first
+ *   - HARD / GOOD / EASY → never sets it, and never satisfies the Tutor's own
+ *     remediation; it clears only if the rating lifts the concept out of WEAK
+ *     (a spaced success — shared mastery), leaving nothing to remediate
+ *
+ * `before` is the concept progress before the rating; the concept-level
+ * schedule (and so `hasTutorAttempt`) is not changed by Study.
+ */
+export function pendingAfterStudyRating(
+  before: ConceptProgress,
+  after: ConceptProgress,
+  rating: SelfRating,
+): boolean {
+  if (rating === "AGAIN") return hasTutorAttempt(before);
+  return before.pendingTutorRemediation && after.mastery === "WEAK";
+}
+
+/**
+ * Migration for learner state saved before `pendingTutorRemediation` existed
+ * (main before card study). There, only the Tutor could make a concept WEAK,
+ * and main's own rule was `totalAttempts > 0 && WEAK &&
+ * !immediateRemediationPassed`. Every main attempt was a Tutor attempt and
+ * advanced the concept schedule, so `totalAttempts === schedule.reps` in such
+ * state; `reps` is used because it stays Tutor-only evidence even for state
+ * that has Study ratings. Applied once on load, this recovers every pending
+ * remediation such state holds. Never applied to a record that already
+ * carries the field — a stored value is authoritative.
+ */
+export function inferLegacyPendingTutorRemediation(
+  progress: Omit<ConceptProgress, "pendingTutorRemediation">,
+): boolean {
+  return (
+    progress.schedule.reps > 0 &&
     progress.mastery === "WEAK" &&
     !progress.immediateRemediationPassed
   );
@@ -747,7 +818,16 @@ export function recordGradedAttempt(
     input.context,
     input.now,
   );
-  const progress: ConceptProgress = { ...afterMastery, schedule };
+  const progress: ConceptProgress = {
+    ...afterMastery,
+    pendingTutorRemediation: pendingAfterTutorAttempt(
+      before,
+      afterMastery,
+      correct,
+      input.context,
+    ),
+    schedule,
+  };
 
   const injectedByChunk = { ...learner.injectedByChunk };
   if (input.context === "INTERLEAVED" && input.chunkId) {

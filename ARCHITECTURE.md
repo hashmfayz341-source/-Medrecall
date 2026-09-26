@@ -726,8 +726,8 @@ card of a note separately.
 - **Why `reps > 0` is the right test** (verified against ts-fsrs 5.4.2):
   - An empty card has `reps` 0; any review makes it at least 1.
   - Every tutor attempt runs FSRS, so tutor-scheduled concepts are unaffected.
-    The independent tutor-parity oracle, 2,033 attempts against `main`, is
-    byte-identical.
+    The tutor-parity oracle (the same random journeys through the real
+    grading route on both trees) is byte-identical against `main`.
   - A placeholder schedule later reviewed by the tutor schedules exactly as a
     fresh one would.
 - **WEAK still surfaces regardless of due state**, so a card rated Again
@@ -767,8 +767,8 @@ Concept mastery and `totalAttempts` are shared aggregate history. Whether the
 **Tutor** retrieved a concept is answered only by the concept-level FSRS
 schedule, which only Tutor attempts advance: `tutorAttemptCount(progress) =
 schedule.reps` and `hasTutorAttempt(progress) = reps > 0`. For learner state
-from before card study, `reps === totalAttempts`. The independent
-tutor-parity oracle against `main` is byte-identical: 2,273 records covering
+from before card study, `reps === totalAttempts`. The tutor-parity oracle
+against `main@482824c` is byte-identical: 2,273 records covering
 TEACH, INITIAL retrieval, remediation, interleaving, item rotation, FSRS and
 72 lecture completions and unlocks.
 
@@ -782,11 +782,11 @@ Tutor decisions that now require Tutor evidence:
   legitimately completed through the Tutor stay complete.
 - **Item rotation (`pickItem`):** Study ratings never change which
   representation the Tutor asks.
-- **Immediate remediation (`pendingRemediation`):** requires a Tutor attempt.
-  `getNextStep` considers only the current lecture and earlier lectures, so a
-  later or locked lecture never interrupts an earlier one. Tutor failures,
-  including INTERLEAVED failures on earlier-lecture concepts, are still
-  re-taught at once.
+- **Immediate remediation (`pendingRemediation`):** requires a Tutor attempt
+  AND explicit pending state — see the next invariant. `getNextStep` considers
+  only the current lecture and earlier lectures, so a later or locked lecture
+  never interrupts an earlier one. Tutor failures, including INTERLEAVED
+  failures on earlier-lecture concepts, are still re-taught at once.
 
 Deliberately still aggregate:
 
@@ -796,10 +796,58 @@ Deliberately still aggregate:
 - the Tutor's stale-grade precondition, which conservatively treats any rating
   of the concept as a change.
 
-Defined behaviour: Study AGAIN on a concept the Tutor has already retrieved,
-in the current or an earlier lecture, makes it WEAK with remediation not yet
-passed. The Tutor then re-teaches it on the next Tutor visit. Completion is not
-revoked.
+**Invariant: pending Tutor remediation is explicit state, not WEAK.**
+`ConceptProgress.pendingTutorRemediation` records that a failure the TUTOR
+must immediately re-teach is outstanding. It is never derived from mastery,
+because mastery is shared: deriving "pending" from `WEAK && reps > 0 &&
+!immediateRemediationPassed` turned a Study AGAIN made *before* the Tutor ever
+asked about a concept into a Tutor remediation as soon as the Tutor's first
+retrieval succeeded (INITIAL success leaves WEAK in place). `pendingRemediation
+= pendingTutorRemediation && reps > 0 && WEAK`.
+
+| Event | `pendingTutorRemediation` after |
+|---|---|
+| New progress (`createProgress`) | false |
+| Tutor INITIAL / SPACED / INTERLEAVED / remediation **incorrect** | true |
+| Tutor IMMEDIATE_REMEDIATION **correct** | false (mastery unchanged: still WEAK, AD-4) |
+| Tutor INITIAL / SPACED / INTERLEAVED **correct** | unchanged while WEAK; false once no longer WEAK |
+| Study AGAIN, concept **never** retrieved by the Tutor | false — the Tutor teaches and retrieves it normally first |
+| Study AGAIN, concept already retrieved by the Tutor | true — re-taught on the next Tutor visit to its lecture or a later one; completion is not revoked |
+| Study HARD / GOOD / EASY | never sets it; unchanged while WEAK, false once no longer WEAK |
+
+- **Pure Tutor is unchanged.** For a Tutor-only learner the transitions give,
+  at every step, exactly main's rule (`totalAttempts > 0 && WEAK &&
+  !immediateRemediationPassed`). Checked by a unit table (every context ×
+  outcome × starting state), by the grade-parity suite (whole-state equality
+  against main's `recordAttempt` at every step), and by the oracle against
+  real `main@482824c`: 2,273 records byte-identical with the field stripped,
+  and the field equal to main's rule in all 19,614 per-concept checks.
+- **Study never satisfies the Tutor's remediation.** A Study success on a
+  Learning/Relearning card (re-study right after Again) still sets
+  `immediateRemediationPassed`, as before, but no longer clears a pending
+  Tutor remediation: only the Tutor's own IMMEDIATE_REMEDIATION does. The one
+  exception is shared mastery: a Study spaced success (Review-state card) that
+  lifts the concept out of WEAK leaves nothing to remediate.
+- **`immediateRemediationPassed` keeps its meaning** — the learner followed a
+  remediation — and is not a proxy for where a failure came from.
+- **Migration, no timestamps.** Learner state saved before the field existed
+  (main before card study) has no Study history, so main's rule is exact for
+  it: `sanitizeLearnerState` derives the field on load from `reps > 0 &&
+  WEAK && !immediateRemediationPassed` (`reps === totalAttempts` there).
+  `LEARNER_STATE_VERSION` is unchanged, so no state is discarded. A present
+  but non-boolean value makes the record malformed and it is dropped, like any
+  other malformed field.
+- **Mixed versions.** main keeps each progress record exactly as stored but
+  rebuilds the envelope, dropping keys it does not know. A tab still running
+  main after an update would therefore write records whose flag it never
+  updated (a Tutor failure over a stale `false` would lose its remediation).
+  So this build stores an envelope mark (`tutorRemediationExplicit: true`,
+  written only by `serializeLearnerState`), and a stored flag is authoritative
+  only under that mark. Without it — main's state, or anything a main tab
+  last wrote — every flag is re-derived with main's rule, which is exact for
+  whatever main did. State written by an unmerged pre-release build of card
+  study is treated the same way; there the rule can at worst ask for one
+  extra remediation, never lose a pending one.
 
 **Concurrency and content.** `captureCardPrecondition` is taken when the
 answer is shown. It records the card's progress version and

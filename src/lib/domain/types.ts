@@ -167,6 +167,18 @@ export interface ConceptProgress {
    * shown the explanation. Explicitly does NOT clear WEAK.
    */
   immediateRemediationPassed: boolean;
+  /**
+   * True while a failure the TUTOR must immediately re-teach is outstanding.
+   *
+   * Explicit state, deliberately NOT derived from `mastery === "WEAK"`:
+   * mastery is shared with Card Study, so a concept can be WEAK because of a
+   * Study failure the Tutor has nothing to remediate. Set by a Tutor failure,
+   * or by a Study AGAIN once the Tutor has retrieved the concept; cleared by a
+   * correct Tutor remediation or by the concept leaving WEAK. Learner state
+   * saved before this field existed is migrated on load (see
+   * `inferLegacyPendingTutorRemediation`).
+   */
+  pendingTutorRemediation: boolean;
   lastAttemptAt: string | null;
   schedule: ScheduleState;
 }

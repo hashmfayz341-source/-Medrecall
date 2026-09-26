@@ -108,6 +108,8 @@ A complete tutor running with no AI key.
       fed by self-ratings (AD-25)
 - [x] New / Learning / Review queue and counts; due material before new
 - [x] ACTIVE concepts only; duplicate and cross-tab ratings refused
+- [x] Study and the Tutor share mastery, never Tutor evidence; pending Tutor
+      remediation is explicit state, migrated for existing learner state
 - [x] Dashboard **Study** entry per lecture
 
 ### Later steps (not started)

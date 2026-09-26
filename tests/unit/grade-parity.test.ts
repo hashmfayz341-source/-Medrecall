@@ -40,7 +40,9 @@ import { ANSWERS, WRONG } from "./helpers";
  * production did before it.
  *
  * The oracle below is the pre-boundary `recordAttempt`, copied verbatim from
- * main at 0c3f502 — grading and state mutation fused in one function. The new
+ * main at 0c3f502 — grading and state mutation fused in one function — plus
+ * one marked line expressing main's pending-remediation rule in the explicit
+ * `pendingTutorRemediation` field that main did not have. The new
  * flow is the real thing end to end: toGradeRequest → JSON → POST /api/grade →
  * provider → JSON → response validation → recordGradedAttempt.
  *
@@ -83,6 +85,17 @@ function legacyRecordAttempt(
     input.now,
   );
   const progress: ConceptProgress = { ...afterMastery, schedule };
+  // The one addition to the verbatim copy. main had no explicit
+  // `pendingTutorRemediation`: a concept was pending exactly when main's
+  // `pendingRemediation` said so — `totalAttempts > 0 && WEAK &&
+  // !immediateRemediationPassed`, inlined here from main. Writing that into
+  // the field lets the shared `reconcile` see main's semantics, and the
+  // whole-state comparison below then checks, at every step, that the
+  // engine's transition-based flag equals main's rule.
+  progress.pendingTutorRemediation =
+    progress.totalAttempts > 0 &&
+    progress.mastery === "WEAK" &&
+    !progress.immediateRemediationPassed;
 
   const injectedByChunk = { ...learner.injectedByChunk };
   if (input.context === "INTERLEAVED" && input.chunkId) {

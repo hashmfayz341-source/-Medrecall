@@ -55,6 +55,7 @@ export function createProgress(
     totalCorrect: 0,
     everWrong: false,
     immediateRemediationPassed: false,
+    pendingTutorRemediation: false,
     lastAttemptAt: null,
     schedule,
   };

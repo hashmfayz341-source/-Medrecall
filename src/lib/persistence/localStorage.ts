@@ -1,5 +1,9 @@
-import { LEARNER_STATE_VERSION, createLearnerState } from "@/lib/engine/tutor";
-import type { LearnerState } from "@/lib/domain/types";
+import {
+  LEARNER_STATE_VERSION,
+  createLearnerState,
+  inferLegacyPendingTutorRemediation,
+} from "@/lib/engine/tutor";
+import type { ConceptProgress, LearnerState } from "@/lib/domain/types";
 import type { LearnerStateRepository } from "./repository";
 
 export const STORAGE_KEY = "medrecall.learner.v1";
@@ -52,6 +56,14 @@ function isConceptProgress(value: unknown, conceptId: string): boolean {
   }
   if (typeof value.everWrong !== "boolean") return false;
   if (typeof value.immediateRemediationPassed !== "boolean") return false;
+  // Absent in state saved before it existed (derived on load, below);
+  // present, it must be a boolean like every other flag.
+  if (
+    value.pendingTutorRemediation !== undefined &&
+    typeof value.pendingTutorRemediation !== "boolean"
+  ) {
+    return false;
+  }
   if (value.lastAttemptAt !== null && typeof value.lastAttemptAt !== "string") {
     return false;
   }
@@ -68,6 +80,26 @@ function isCardProgress(value: unknown, itemId: string): boolean {
   if (value.lastRating !== null && !SELF_RATINGS.includes(String(value.lastRating))) return false;
   if (value.lastReviewedAt !== null && typeof value.lastReviewedAt !== "string") return false;
   return isScheduleState(value.schedule);
+}
+
+/**
+ * Envelope key marking learner state written by a build that maintains
+ * `ConceptProgress.pendingTutorRemediation`.
+ *
+ * main before card study keeps every progress record exactly as stored but
+ * rebuilds the envelope, dropping keys it does not know. A tab still running
+ * that build after an update would therefore save records whose flag it never
+ * updated — a Tutor failure over a stale `false`, or a passed remediation over
+ * a stale `true` — and it always drops this mark. So the mark's absence means
+ * "flags not maintained by the last writer", and every record's flag is
+ * re-derived with main's rule. Not a timestamp or content heuristic: only
+ * `serializeLearnerState` writes it.
+ */
+export const EXPLICIT_REMEDIATION_MARK = "tutorRemediationExplicit";
+
+/** The exact string this build stores for a learner state. */
+export function serializeLearnerState(state: LearnerState): string {
+  return JSON.stringify({ ...state, [EXPLICIT_REMEDIATION_MARK]: true });
 }
 
 /**
@@ -88,11 +120,24 @@ export function sanitizeLearnerState(
   if (!isRecord(value.injectedByChunk)) return null;
   if (!Object.values(value.injectedByChunk).every(isStringArray)) return null;
 
+  // Stored flags are authoritative only in an envelope this build wrote.
+  const explicit = value[EXPLICIT_REMEDIATION_MARK] === true;
+
   const progress: LearnerState["progress"] = {};
   const dropped: string[] = [];
   for (const [conceptId, record] of Object.entries(value.progress)) {
     if (isConceptProgress(record, conceptId)) {
-      progress[conceptId] = record as LearnerState["progress"][string];
+      const valid = record as Omit<ConceptProgress, "pendingTutorRemediation"> & {
+        pendingTutorRemediation?: boolean;
+      };
+      // State last written by a build that did not maintain the flag — main
+      // before card study, or a tab still running it — gets it from main's
+      // own rule, which is exact for everything such a build did. Otherwise a
+      // stored value is authoritative and never re-inferred.
+      progress[conceptId] =
+        explicit && valid.pendingTutorRemediation !== undefined
+          ? (valid as ConceptProgress)
+          : { ...valid, pendingTutorRemediation: inferLegacyPendingTutorRemediation(valid) };
     } else {
       dropped.push(conceptId);
     }
@@ -147,7 +192,7 @@ export class LocalStorageLearnerRepository implements LearnerStateRepository {
   save(state: LearnerState): boolean {
     if (typeof window === "undefined") return false;
     try {
-      window.localStorage.setItem(this.key, JSON.stringify(state));
+      window.localStorage.setItem(this.key, serializeLearnerState(state));
       return true;
     } catch {
       return false;

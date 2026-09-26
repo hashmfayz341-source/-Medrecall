@@ -123,6 +123,15 @@ mastery).
   Tutor decision: untested, completion, unlocking, rotation, remediation.
   Study ratings share mastery but must never satisfy a Tutor retrieval, and a
   later or locked lecture never interrupts an earlier one.
+- **Pending Tutor remediation is explicit state, never "WEAK".** Only
+  `pendingTutorRemediation` (with a Tutor attempt and WEAK as guards) makes the
+  Tutor REMEDIATE. WEAK can come from a Study AGAIN before the Tutor covered
+  the concept; that must not become a Tutor remediation. Set it only through
+  `pendingAfterTutorAttempt` / `pendingAfterStudyRating`, never infer it from
+  mastery, timestamps or `immediateRemediationPassed` — except on load, for
+  state not written by this build (`inferLegacyPendingTutorRemediation`,
+  main's exact rule). Always persist through `serializeLearnerState`: its
+  `tutorRemediationExplicit` mark is what makes stored flags authoritative.
 - **A card rating is for the content that was shown.**
   `captureCardPrecondition` includes `gradingTargetFingerprint`, and any edit,
   source change or status change since Show Answer makes the rating stale.
@@ -224,7 +233,7 @@ above that interface knows where state lives.
 npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
 ```
 
-429 unit tests, 104 E2E tests (52 per project, iPad and desktop viewports). The E2E suite
+472 unit tests, 114 E2E tests (57 per project, iPad and desktop viewports). The E2E suite
 drives the real UI through the complete demo journey, including the deliberate
 ATP-depletion failure.
 
