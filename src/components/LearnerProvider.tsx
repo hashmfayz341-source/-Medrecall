@@ -24,7 +24,11 @@ import {
 } from "@/lib/domain/curriculum";
 import { pathologyCurriculum } from "@/lib/content/pathology";
 import { createLearnerState } from "@/lib/engine/tutor";
-import { LocalStorageLearnerRepository, STORAGE_KEY } from "@/lib/persistence/localStorage";
+import {
+  LocalStorageLearnerRepository,
+  STORAGE_KEY,
+  STUDY_CARDS_STORAGE_KEY,
+} from "@/lib/persistence/localStorage";
 import { acceptIncomingLearnerState } from "@/lib/domain/quarantine";
 import { LocalStorageCurriculumRepository, CURRICULUM_STORAGE_KEY } from "@/lib/persistence/curriculumStore";
 import type {
@@ -165,7 +169,14 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
     function onStorage(event: StorageEvent) {
       const curriculumChanged =
         event.key === CURRICULUM_STORAGE_KEY || event.key === null;
-      const learnerChanged = event.key === STORAGE_KEY || event.key === null;
+      // Learner state lives in two keys: the envelope and the Study-card
+      // sidecar. Either one changing means re-reading both (load() merges
+      // them), so an envelope rewritten by a tab still running main — which
+      // has no cards — never drops this tab's card progress.
+      const learnerChanged =
+        event.key === STORAGE_KEY ||
+        event.key === STUDY_CARDS_STORAGE_KEY ||
+        event.key === null;
       if (!curriculumChanged && !learnerChanged) return;
       syncRef.current(curriculumChanged);
     }

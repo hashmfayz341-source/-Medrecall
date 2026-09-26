@@ -43,6 +43,17 @@ export function masteryForStreak(streak: number): MasteryState {
   return "NEW";
 }
 
+/**
+ * Deterministic revision of a concept's TUTOR schedule. Every Tutor attempt
+ * (in any build, main included) runs FSRS, which increments `reps` and sets
+ * `last_review`; Card Study never touches the concept schedule. So two equal
+ * revisions mean no Tutor attempt happened in between. No wall-clock guessing:
+ * both parts are written by FSRS itself.
+ */
+export function tutorScheduleRevision(schedule: ScheduleState): string {
+  return `${schedule.reps}|${schedule.last_review ?? ""}`;
+}
+
 export function createProgress(
   conceptId: string,
   schedule: ScheduleState,
@@ -56,6 +67,7 @@ export function createProgress(
     everWrong: false,
     immediateRemediationPassed: false,
     pendingTutorRemediation: false,
+    pendingTutorRemediationRevision: tutorScheduleRevision(schedule),
     lastAttemptAt: null,
     schedule,
   };

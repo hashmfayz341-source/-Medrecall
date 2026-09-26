@@ -1,12 +1,26 @@
+import { tutorScheduleRevision } from "@/lib/domain/mastery";
 import {
   LEARNER_STATE_VERSION,
   createLearnerState,
   inferLegacyPendingTutorRemediation,
 } from "@/lib/engine/tutor";
-import type { ConceptProgress, LearnerState } from "@/lib/domain/types";
+import type { CardProgress, ConceptProgress, LearnerState } from "@/lib/domain/types";
 import type { LearnerStateRepository } from "./repository";
 
+/**
+ * The learner envelope. main before card study also reads and REWRITES this
+ * key: it keeps each concept record as stored but rebuilds the envelope with
+ * only the fields it knows, so anything else stored here (e.g. `cards`) is
+ * lost whenever a tab still running main saves.
+ */
 export const STORAGE_KEY = "medrecall.learner.v1";
+
+/**
+ * Study-card FSRS progress, owned only by card study. main never reads or
+ * writes this key, so a stale main tab cannot erase card schedules.
+ */
+export const STUDY_CARDS_STORAGE_KEY = "medrecall.study-cards.v1";
+export const STUDY_CARDS_VERSION = 1;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -56,11 +70,17 @@ function isConceptProgress(value: unknown, conceptId: string): boolean {
   }
   if (typeof value.everWrong !== "boolean") return false;
   if (typeof value.immediateRemediationPassed !== "boolean") return false;
-  // Absent in state saved before it existed (derived on load, below);
-  // present, it must be a boolean like every other flag.
+  // Absent in state saved before they existed (derived on load, below);
+  // present, they must be well formed like every other field.
   if (
     value.pendingTutorRemediation !== undefined &&
     typeof value.pendingTutorRemediation !== "boolean"
+  ) {
+    return false;
+  }
+  if (
+    value.pendingTutorRemediationRevision !== undefined &&
+    typeof value.pendingTutorRemediationRevision !== "string"
   ) {
     return false;
   }
@@ -82,24 +102,35 @@ function isCardProgress(value: unknown, itemId: string): boolean {
   return isScheduleState(value.schedule);
 }
 
-/**
- * Envelope key marking learner state written by a build that maintains
- * `ConceptProgress.pendingTutorRemediation`.
- *
- * main before card study keeps every progress record exactly as stored but
- * rebuilds the envelope, dropping keys it does not know. A tab still running
- * that build after an update would therefore save records whose flag it never
- * updated — a Tutor failure over a stale `false`, or a passed remediation over
- * a stale `true` — and it always drops this mark. So the mark's absence means
- * "flags not maintained by the last writer", and every record's flag is
- * re-derived with main's rule. Not a timestamp or content heuristic: only
- * `serializeLearnerState` writes it.
- */
-export const EXPLICIT_REMEDIATION_MARK = "tutorRemediationExplicit";
+/** Validate card records one by one, dropping malformed ones. */
+function sanitizeCardRecords(
+  value: Record<string, unknown>,
+  dropped: string[],
+): Record<string, CardProgress> {
+  const cards: Record<string, CardProgress> = {};
+  for (const [itemId, record] of Object.entries(value)) {
+    if (isCardProgress(record, itemId)) {
+      cards[itemId] = record as CardProgress;
+    } else {
+      dropped.push(`card:${itemId}`);
+    }
+  }
+  return cards;
+}
 
-/** The exact string this build stores for a learner state. */
-export function serializeLearnerState(state: LearnerState): string {
-  return JSON.stringify({ ...state, [EXPLICIT_REMEDIATION_MARK]: true });
+/**
+ * Validate the Study-card sidecar. Returns null when it cannot be trusted as a
+ * whole (not an object, unknown version, `cards` not an object); otherwise the
+ * valid card records, with malformed ones dropped individually.
+ */
+export function sanitizeStudyCards(
+  value: unknown,
+): { cards: Record<string, CardProgress>; dropped: string[] } | null {
+  if (!isRecord(value)) return null;
+  if (value.version !== STUDY_CARDS_VERSION) return null;
+  if (!isRecord(value.cards)) return null;
+  const dropped: string[] = [];
+  return { cards: sanitizeCardRecords(value.cards, dropped), dropped };
 }
 
 /**
@@ -120,24 +151,31 @@ export function sanitizeLearnerState(
   if (!isRecord(value.injectedByChunk)) return null;
   if (!Object.values(value.injectedByChunk).every(isStringArray)) return null;
 
-  // Stored flags are authoritative only in an envelope this build wrote.
-  const explicit = value[EXPLICIT_REMEDIATION_MARK] === true;
-
   const progress: LearnerState["progress"] = {};
   const dropped: string[] = [];
   for (const [conceptId, record] of Object.entries(value.progress)) {
     if (isConceptProgress(record, conceptId)) {
-      const valid = record as Omit<ConceptProgress, "pendingTutorRemediation"> & {
-        pendingTutorRemediation?: boolean;
+      const valid = record as Omit<
+        ConceptProgress,
+        "pendingTutorRemediation" | "pendingTutorRemediationRevision"
+      > &
+        Partial<Pick<ConceptProgress, "pendingTutorRemediation" | "pendingTutorRemediationRevision">>;
+      // A stored flag is trusted only if it was decided at the Tutor schedule
+      // revision the record has now. main keeps both fields as stored, so if a
+      // tab running main made a Tutor attempt on this concept since, the
+      // revision no longer matches and the flag may be stale; main's own rule
+      // then decides, as it does for state main wrote before the field existed.
+      const revision = tutorScheduleRevision(valid.schedule);
+      const current =
+        typeof valid.pendingTutorRemediation === "boolean" &&
+        valid.pendingTutorRemediationRevision === revision;
+      progress[conceptId] = {
+        ...valid,
+        pendingTutorRemediation: current
+          ? valid.pendingTutorRemediation!
+          : inferLegacyPendingTutorRemediation(valid),
+        pendingTutorRemediationRevision: revision,
       };
-      // State last written by a build that did not maintain the flag — main
-      // before card study, or a tab still running it — gets it from main's
-      // own rule, which is exact for everything such a build did. Otherwise a
-      // stored value is authoritative and never re-inferred.
-      progress[conceptId] =
-        explicit && valid.pendingTutorRemediation !== undefined
-          ? (valid as ConceptProgress)
-          : { ...valid, pendingTutorRemediation: inferLegacyPendingTutorRemediation(valid) };
     } else {
       dropped.push(conceptId);
     }
@@ -152,37 +190,76 @@ export function sanitizeLearnerState(
     injectedByChunk: value.injectedByChunk as LearnerState["injectedByChunk"],
   };
 
-  // Study-card progress is optional: state saved before card study existed
-  // has none and loads unchanged. Malformed card records are dropped one by
-  // one, like concept records, rather than discarding the learner's history.
+  // Cards inside the envelope exist only in state written by earlier builds
+  // of card study, before the sidecar. They are still read — the repository
+  // uses them when there is no valid sidecar yet — and malformed records are
+  // dropped one by one, like concept records.
   if (value.cards !== undefined) {
     if (!isRecord(value.cards)) return null;
-    const cards: NonNullable<LearnerState["cards"]> = {};
-    for (const [itemId, record] of Object.entries(value.cards)) {
-      if (isCardProgress(record, itemId)) {
-        cards[itemId] = record as NonNullable<LearnerState["cards"]>[string];
-      } else {
-        dropped.push(`card:${itemId}`);
-      }
-    }
-    state.cards = cards;
+    state.cards = sanitizeCardRecords(value.cards, dropped);
   }
 
   return { state, dropped };
 }
 
+function readJson(key: string): unknown {
+  const raw = window.localStorage.getItem(key);
+  if (raw === null) return undefined;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Learner state in two keys: the envelope (`STORAGE_KEY`) and the Study-card
+ * sidecar (`STUDY_CARDS_STORAGE_KEY`).
+ *
+ * LOAD. The envelope is sanitized as always; without one there is no learner
+ * (the sidecar is never used on its own). Card progress then comes from:
+ *   1. a valid sidecar — authoritative whenever it exists;
+ *   2. otherwise `cards` inside the envelope (state from earlier card-study
+ *      builds): migrated, and moved to the sidecar by the next save;
+ *   3. otherwise none.
+ * A stale main tab rewriting the envelope without `cards` therefore never
+ * loses card schedules. Quarantine runs on the merged state as before, and its
+ * result is saved through here, so removed cards are removed from the sidecar
+ * and cannot come back.
+ *
+ * SAVE. localStorage cannot update two keys atomically, so the order is fixed:
+ *   1. the sidecar, if the state has card progress. A state with no `cards`
+ *      at all never erases the sidecar of an existing learner; it removes
+ *      one only when no envelope is stored either (a new learner after a
+ *      Reset, including a Reset in a stale main tab, which removes only the
+ *      envelope) so cleared card schedules cannot come back;
+ *   2. then the envelope, without `cards`, only if step 1 succeeded.
+ * If the sidecar write fails, nothing is written: storage keeps the last saved
+ * pair. If the envelope write fails after the sidecar, card progress is the
+ * newer one while concept progress is the last saved (a card is never lost;
+ * at most one save's mastery change is). Either way `save` returns false and
+ * the app reports the failure — no transaction is claimed.
+ *
+ * CLEAR removes both keys.
+ */
 export class LocalStorageLearnerRepository implements LearnerStateRepository {
-  constructor(private readonly key: string = STORAGE_KEY) {}
+  constructor(
+    private readonly key: string = STORAGE_KEY,
+    private readonly cardsKey: string = STUDY_CARDS_STORAGE_KEY,
+  ) {}
 
   load(): LearnerState | null {
     if (typeof window === "undefined") return null;
     try {
-      const raw = window.localStorage.getItem(this.key);
-      if (!raw) return null;
-      const sanitized = sanitizeLearnerState(JSON.parse(raw));
+      const sanitized = sanitizeLearnerState(readJson(this.key));
       if (!sanitized) return null;
       if (sanitized.state.version !== LEARNER_STATE_VERSION) return null;
-      return sanitized.state;
+      const state = sanitized.state;
+      const sidecar = sanitizeStudyCards(readJson(this.cardsKey));
+      if (sidecar) {
+        state.cards = sidecar.cards;
+      }
+      return state;
     } catch {
       // Corrupt or unavailable storage must never break the app.
       return null;
@@ -191,8 +268,25 @@ export class LocalStorageLearnerRepository implements LearnerStateRepository {
 
   save(state: LearnerState): boolean {
     if (typeof window === "undefined") return false;
+    const { cards, ...envelope } = state;
     try {
-      window.localStorage.setItem(this.key, serializeLearnerState(state));
+      if (cards !== undefined) {
+        window.localStorage.setItem(
+          this.cardsKey,
+          JSON.stringify({ version: STUDY_CARDS_VERSION, cards }),
+        );
+      } else if (window.localStorage.getItem(this.key) === null) {
+        // No learner envelope and no cards in memory: this is a new learner
+        // (first save, or after a Reset — possibly one made by a tab still
+        // running main, which only removes the envelope). A sidecar left
+        // behind belongs to the cleared learner and must not come back.
+        window.localStorage.removeItem(this.cardsKey);
+      }
+    } catch {
+      return false;
+    }
+    try {
+      window.localStorage.setItem(this.key, JSON.stringify(envelope));
       return true;
     } catch {
       return false;
@@ -201,10 +295,12 @@ export class LocalStorageLearnerRepository implements LearnerStateRepository {
 
   clear(): void {
     if (typeof window === "undefined") return;
-    try {
-      window.localStorage.removeItem(this.key);
-    } catch {
-      // ignore
+    for (const key of [this.key, this.cardsKey]) {
+      try {
+        window.localStorage.removeItem(key);
+      } catch {
+        // ignore
+      }
     }
   }
 }

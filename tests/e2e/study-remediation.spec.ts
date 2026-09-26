@@ -15,14 +15,14 @@ const HYPOXIA = "c-hypoxia";
 const REV = "c-reversible-irreversible";
 
 type Stored = {
-  tutorRemediationExplicit?: boolean;
   progress: Record<
     string,
     {
       mastery: string;
       immediateRemediationPassed: boolean;
       pendingTutorRemediation?: boolean;
-      schedule: { reps: number };
+      pendingTutorRemediationRevision?: string;
+      schedule: { reps: number; last_review?: string };
     }
   >;
 };
@@ -65,7 +65,8 @@ test("Astra: Study Again before the Tutor, then a correct Tutor answer → the T
   expect(s.progress[HYPOXIA]!.mastery).toBe("WEAK");
   expect(s.progress[HYPOXIA]!.schedule.reps).toBe(1);
   expect(s.progress[HYPOXIA]!.pendingTutorRemediation).toBe(false);
-  expect(s.tutorRemediationExplicit).toBe(true);
+  // Decided at the Tutor schedule revision it now has, so it is trusted on load.
+  expect(s.progress[HYPOXIA]!.pendingTutorRemediationRevision).toBe(`1|${s.progress[HYPOXIA]!.schedule.last_review}`);
 
   // Reloading does not reinterpret the stored state as a pending remediation.
   await page.reload();
@@ -115,10 +116,12 @@ test("legacy: a remediation main already passed is not re-opened", async ({ page
 });
 
 test("mixed versions: a Tutor failure saved by a tab still running main, over a stale flag, is still remediated", async ({ page }) => {
-  // main keeps records as stored but drops envelope keys it does not know, so
-  // its writes carry this build's old flag and never the explicit mark.
+  // main keeps records as stored — flag and revision included — so its write
+  // carries this build's old flag; the revision no longer matches main's Tutor
+  // attempt, and main's rule decides.
   const written = JSON.parse(JSON.stringify(MAIN_PENDING_REMEDIATION));
   written.progress[HYPOXIA].pendingTutorRemediation = false;
+  written.progress[HYPOXIA].pendingTutorRemediationRevision = "0|"; // decided before main's attempt
   await page.evaluate(([k, v]) => localStorage.setItem(k!, v!), [LK, JSON.stringify(written)]);
   await page.goto(`/learn/${L1}`);
   await expect(page.getByTestId("step-remediate")).toHaveAttribute("data-concept-id", HYPOXIA);

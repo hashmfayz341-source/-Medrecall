@@ -110,6 +110,8 @@ A complete tutor running with no AI key.
 - [x] ACTIVE concepts only; duplicate and cross-tab ratings refused
 - [x] Study and the Tutor share mastery, never Tutor evidence; pending Tutor
       remediation is explicit state, migrated for existing learner state
+- [x] Safe alongside a stale main tab: per-concept remediation provenance, and
+      card progress in its own storage key (`medrecall.study-cards.v1`)
 - [x] Dashboard **Study** entry per lecture
 
 ### Later steps (not started)

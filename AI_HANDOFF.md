@@ -129,9 +129,17 @@ mastery).
   the concept; that must not become a Tutor remediation. Set it only through
   `pendingAfterTutorAttempt` / `pendingAfterStudyRating`, never infer it from
   mastery, timestamps or `immediateRemediationPassed` — except on load, for
-  state not written by this build (`inferLegacyPendingTutorRemediation`,
-  main's exact rule). Always persist through `serializeLearnerState`: its
-  `tutorRemediationExplicit` mark is what makes stored flags authoritative.
+  records whose flag is not provably current (`inferLegacyPendingTutorRemediation`,
+  main's exact rule). Change the flag only through `withPendingTutorRemediation`,
+  which stamps `pendingTutorRemediationRevision`: a stored flag is trusted on
+  load only while that revision matches the concept's Tutor schedule, because
+  a tab still running main keeps the flag as stored while changing the concept.
+- **Card progress lives in its own key (`medrecall.study-cards.v1`).** Never
+  move it back into `medrecall.learner.v1`: a tab still running main rewrites
+  that envelope without it. Persist learner state only through
+  `LocalStorageLearnerRepository`, which writes the sidecar first and clears
+  both keys on reset. Mixed-version tests run main's real code from git
+  (`tests/base-main`), not an imitation of it.
 - **A card rating is for the content that was shown.**
   `captureCardPrecondition` includes `gradingTargetFingerprint`, and any edit,
   source change or status change since Show Answer makes the rating stale.
@@ -233,7 +241,7 @@ above that interface knows where state lives.
 npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
 ```
 
-472 unit tests, 114 E2E tests (57 per project, iPad and desktop viewports). The E2E suite
+491 unit tests, 124 E2E tests (62 per project, iPad and desktop viewports). Mixed-version tests need the base commit 482824c in local git history (a normal clone has it). The E2E suite
 drives the real UI through the complete demo journey, including the deliberate
 ATP-depletion failure.
 

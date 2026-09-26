@@ -5,7 +5,11 @@ import {
   LectureLockedError,
   StaleAttemptError,
 } from "@/lib/domain/errors";
-import { applyRetrievalToMastery, createProgress } from "@/lib/domain/mastery";
+import {
+  applyRetrievalToMastery,
+  createProgress,
+  tutorScheduleRevision,
+} from "@/lib/domain/mastery";
 import {
   gradeAnswer,
   isValidGradeResult,
@@ -234,18 +238,36 @@ export function pendingAfterStudyRating(
 }
 
 /**
- * Migration for learner state saved before `pendingTutorRemediation` existed
- * (main before card study). There, only the Tutor could make a concept WEAK,
- * and main's own rule was `totalAttempts > 0 && WEAK &&
- * !immediateRemediationPassed`. Every main attempt was a Tutor attempt and
- * advanced the concept schedule, so `totalAttempts === schedule.reps` in such
- * state; `reps` is used because it stays Tutor-only evidence even for state
- * that has Study ratings. Applied once on load, this recovers every pending
- * remediation such state holds. Never applied to a record that already
- * carries the field — a stored value is authoritative.
+ * Record a pending-remediation decision together with the Tutor schedule
+ * revision it was made at — the provenance `sanitizeLearnerState` checks
+ * before trusting a stored flag.
+ */
+export function withPendingTutorRemediation(
+  progress: ConceptProgress,
+  pending: boolean,
+): ConceptProgress {
+  return {
+    ...progress,
+    pendingTutorRemediation: pending,
+    pendingTutorRemediationRevision: tutorScheduleRevision(progress.schedule),
+  };
+}
+
+/**
+ * main's pending-remediation rule, used on load for any record whose stored
+ * flag is not provably current: the field is absent (state from main before
+ * card study), or it was recorded at a different Tutor schedule revision than
+ * the record now has (a tab still running main made a Tutor attempt on the
+ * concept since, keeping the old flag as stored).
+ *
+ * In both cases the latest Tutor-side changes were made by main, and main's
+ * rule was `totalAttempts > 0 && WEAK && !immediateRemediationPassed`. Every
+ * main attempt is a Tutor attempt that advances the concept schedule, so for
+ * main's own state `totalAttempts === schedule.reps`; `reps` is used because
+ * it stays Tutor-only evidence when Study ratings are present too.
  */
 export function inferLegacyPendingTutorRemediation(
-  progress: Omit<ConceptProgress, "pendingTutorRemediation">,
+  progress: Pick<ConceptProgress, "schedule" | "mastery" | "immediateRemediationPassed">,
 ): boolean {
   return (
     progress.schedule.reps > 0 &&
@@ -818,16 +840,10 @@ export function recordGradedAttempt(
     input.context,
     input.now,
   );
-  const progress: ConceptProgress = {
-    ...afterMastery,
-    pendingTutorRemediation: pendingAfterTutorAttempt(
-      before,
-      afterMastery,
-      correct,
-      input.context,
-    ),
-    schedule,
-  };
+  const progress = withPendingTutorRemediation(
+    { ...afterMastery, schedule },
+    pendingAfterTutorAttempt(before, afterMastery, correct, input.context),
+  );
 
   const injectedByChunk = { ...learner.injectedByChunk };
   if (input.context === "INTERLEAVED" && input.chunkId) {

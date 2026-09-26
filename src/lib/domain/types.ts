@@ -179,6 +179,13 @@ export interface ConceptProgress {
    * `inferLegacyPendingTutorRemediation`).
    */
   pendingTutorRemediation: boolean;
+  /**
+   * `tutorScheduleRevision(schedule)` at the moment `pendingTutorRemediation`
+   * was last decided. Only this build writes it; main keeps it as stored even
+   * when its own Tutor attempt changes the schedule. On load, a stored flag is
+   * trusted only while this still matches the concept's Tutor schedule.
+   */
+  pendingTutorRemediationRevision: string;
   lastAttemptAt: string | null;
   schedule: ScheduleState;
 }

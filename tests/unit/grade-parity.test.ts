@@ -96,6 +96,8 @@ function legacyRecordAttempt(
     progress.totalAttempts > 0 &&
     progress.mastery === "WEAK" &&
     !progress.immediateRemediationPassed;
+  // …stamped with the Tutor schedule revision it describes (the new schedule).
+  progress.pendingTutorRemediationRevision = `${schedule.reps}|${schedule.last_review ?? ""}`;
 
   const injectedByChunk = { ...learner.injectedByChunk };
   if (input.context === "INTERLEAVED" && input.chunkId) {

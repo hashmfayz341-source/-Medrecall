@@ -21,11 +21,10 @@ import {
   type SessionStep,
 } from "@/lib/engine/tutor";
 import {
-  EXPLICIT_REMEDIATION_MARK,
+  STUDY_CARDS_STORAGE_KEY,
   LocalStorageLearnerRepository,
   STORAGE_KEY,
   sanitizeLearnerState,
-  serializeLearnerState,
 } from "@/lib/persistence/localStorage";
 import { MAIN_PENDING_REMEDIATION, MAIN_REMEDIATED } from "../fixtures/main-learner-state";
 import { driveLecture } from "./driver";
@@ -146,7 +145,7 @@ describe("Astra repro: a Study failure before the Tutor is not a Tutor remediati
     let learner = study(createLearnerState(), HYPOXIA, "AGAIN", T0);
     learner = markChunkTaught(C, learner, CHUNK1);
     learner = answer(learner, getNextStep(C, learner, L1, at(2)), true, at(2));
-    const reloaded = sanitizeLearnerState(JSON.parse(serializeLearnerState(learner)))!;
+    const reloaded = sanitizeLearnerState(JSON.parse(JSON.stringify(learner)))!;
     expect(reloaded.dropped).toEqual([]);
     expect(flag(reloaded.state, HYPOXIA)).toBe(false);
     expect(shape(getNextStep(C, reloaded.state, L1, at(3)))).toEqual(["RETRIEVE", REV, "c-rev-1"]);
@@ -325,6 +324,17 @@ describe("state machine", () => {
       }
     });
 
+    it("a Study rating on a Review-state card that leaves the concept WEAK (HARD) keeps the Tutor remediation pending", () => {
+      let learner = study(createLearnerState(), HYPOXIA, "EASY", T0); // card → Review
+      learner = markChunkTaught(C, learner, CHUNK1);
+      learner = answer(learner, getNextStep(C, learner, L1, at(1)), false, at(1));
+      const later = at(30 * DAY);
+      learner = study(learner, HYPOXIA, "HARD", later);
+      expect(learner.progress[HYPOXIA]!.mastery).toBe("WEAK");
+      expect(flag(learner, HYPOXIA)).toBe(true);
+      expect(getNextStep(C, learner, L1, later).kind).toBe("REMEDIATE");
+    });
+
     it("a Study spaced success that lifts WEAK leaves nothing to remediate (shared mastery)", () => {
       // Card studied Easy long ago → Review state; the Tutor then fails the concept.
       let learner = study(createLearnerState(), HYPOXIA, "EASY", T0);
@@ -484,6 +494,7 @@ describe("legacy learner state (main@482824c, no pendingTutorRemediation field)"
     expect(loaded.state.progress[HYPOXIA]).toEqual({
       ...legacy.progress[HYPOXIA],
       pendingTutorRemediation: false,
+      pendingTutorRemediationRevision: "1|2026-06-01T09:00:00.000Z",
     });
     expect(loaded.state.taughtChunkIds).toEqual(legacy.taughtChunkIds);
   });
@@ -494,57 +505,62 @@ describe("legacy learner state (main@482824c, no pendingTutorRemediation field)"
     expect("pendingTutorRemediation" in raw.progress[HYPOXIA]).toBe(false);
   });
 
-  it("in state this build wrote, a stored flag is authoritative, never re-inferred", () => {
-    const stored = { ...JSON.parse(JSON.stringify(MAIN_PENDING_REMEDIATION)), [EXPLICIT_REMEDIATION_MARK]: true };
+  const FAILURE_REVISION = "1|2026-06-01T09:00:00.000Z"; // MAIN_PENDING_REMEDIATION's schedule
+  const REMEDIATED_REVISION = "2|2026-06-01T09:01:00.000Z"; // MAIN_REMEDIATED's schedule
+
+  it("a stored flag decided at the record's current Tutor revision is authoritative, never re-inferred", () => {
+    const stored = JSON.parse(JSON.stringify(MAIN_PENDING_REMEDIATION));
+    stored.progress[HYPOXIA].pendingTutorRemediationRevision = FAILURE_REVISION;
     stored.progress[HYPOXIA].pendingTutorRemediation = false;
     expect(flag(load(stored)!.state, HYPOXIA)).toBe(false);
     stored.progress[HYPOXIA].pendingTutorRemediation = true;
     expect(flag(load(stored)!.state, HYPOXIA)).toBe(true);
   });
 
-  describe("state last written by a build that does not maintain the flag (no mark)", () => {
-    // main keeps each progress record as stored but rebuilds the envelope,
-    // dropping keys it does not know — including the mark. A tab still
-    // running main after an update therefore writes records whose flag it
-    // never touched. Its outcomes follow main's rule, so that rule decides.
+  describe("a stored flag decided at a DIFFERENT Tutor revision → main's rule", () => {
+    // main keeps both fields exactly as stored, so a Tutor attempt made by a
+    // tab still running main leaves them describing an older schedule.
     it("a Tutor failure main recorded over a stale `false` is still remediated", () => {
       const written = JSON.parse(JSON.stringify(MAIN_PENDING_REMEDIATION));
-      written.progress[HYPOXIA].pendingTutorRemediation = false; // left over from this build
+      written.progress[HYPOXIA].pendingTutorRemediation = false; // decided before main's attempt
+      written.progress[HYPOXIA].pendingTutorRemediationRevision = "0|";
       const loaded = load(written)!;
       expect(flag(loaded.state, HYPOXIA)).toBe(true);
+      expect(loaded.state.progress[HYPOXIA]!.pendingTutorRemediationRevision).toBe(FAILURE_REVISION);
       expect(getNextStep(C, loaded.state, L1, at(1)).kind).toBe("REMEDIATE");
     });
 
     it("a remediation main recorded as passed over a stale `true` is not re-opened", () => {
       const written = JSON.parse(JSON.stringify(MAIN_REMEDIATED));
-      written.progress[HYPOXIA].pendingTutorRemediation = true; // left over from this build
+      written.progress[HYPOXIA].pendingTutorRemediation = true; // decided at the failure
+      written.progress[HYPOXIA].pendingTutorRemediationRevision = FAILURE_REVISION;
       const loaded = load(written)!;
       expect(flag(loaded.state, HYPOXIA)).toBe(false);
+      expect(loaded.state.progress[HYPOXIA]!.pendingTutorRemediationRevision).toBe(REMEDIATED_REVISION);
       expect(shape(getNextStep(C, loaded.state, L1, at(2)))).toEqual(["RETRIEVE", REV, "c-rev-1"]);
     });
 
-    it("only an exact `true` mark counts", () => {
-      for (const mark of [false, "true", 1, null]) {
-        const written = { ...JSON.parse(JSON.stringify(MAIN_PENDING_REMEDIATION)), [EXPLICIT_REMEDIATION_MARK]: mark };
-        written.progress[HYPOXIA].pendingTutorRemediation = false;
-        expect(flag(load(written)!.state, HYPOXIA), String(mark)).toBe(true);
-      }
+    it("a flag with no revision (earlier builds of this PR) gets main's rule", () => {
+      const written = JSON.parse(JSON.stringify(MAIN_PENDING_REMEDIATION));
+      written.progress[HYPOXIA].pendingTutorRemediation = false;
+      expect(flag(load(written)!.state, HYPOXIA)).toBe(true);
     });
   });
 
-  it("a malformed flag drops that record like any other malformed field", () => {
-    for (const mark of [undefined, true]) {
-      for (const bad of ["yes", 1, null, {}]) {
-        const stored = { ...JSON.parse(JSON.stringify(MAIN_PENDING_REMEDIATION)), [EXPLICIT_REMEDIATION_MARK]: mark };
-        stored.progress[HYPOXIA].pendingTutorRemediation = bad;
-        const loaded = load(stored)!;
-        expect(loaded.dropped, `${String(mark)} ${String(bad)}`).toEqual([HYPOXIA]);
-        expect(loaded.state.progress[HYPOXIA]).toBeUndefined();
-      }
+  it("a malformed flag or revision drops that record like any other malformed field", () => {
+    for (const [field, bad] of [
+      ["pendingTutorRemediation", "yes"], ["pendingTutorRemediation", 1], ["pendingTutorRemediation", null], ["pendingTutorRemediation", {}],
+      ["pendingTutorRemediationRevision", 1], ["pendingTutorRemediationRevision", null], ["pendingTutorRemediationRevision", {}],
+    ] as const) {
+      const stored = JSON.parse(JSON.stringify(MAIN_PENDING_REMEDIATION));
+      stored.progress[HYPOXIA][field] = bad;
+      const loaded = load(stored)!;
+      expect(loaded.dropped, `${field} ${String(bad)}`).toEqual([HYPOXIA]);
+      expect(loaded.state.progress[HYPOXIA]).toBeUndefined();
     }
   });
 
-  it("the repository writes the mark, and this build's state round-trips exactly (flags, cards, everything)", () => {
+  it("the repository round-trips this build's state exactly (flags, revisions, cards in the sidecar)", () => {
     const store = new Map<string, string>();
     (globalThis as { window?: unknown }).window = {
       localStorage: {
@@ -566,10 +582,10 @@ describe("legacy learner state (main@482824c, no pendingTutorRemediation field)"
 
       const repo = new LocalStorageLearnerRepository();
       expect(repo.save(learner)).toBe(true);
-      expect(JSON.parse(store.get(STORAGE_KEY)!)[EXPLICIT_REMEDIATION_MARK]).toBe(true);
+      expect(JSON.parse(store.get(STORAGE_KEY)!).cards).toBeUndefined();
+      expect(JSON.parse(store.get(STUDY_CARDS_STORAGE_KEY)!).cards).toEqual(learner.cards);
       const reloaded = new LocalStorageLearnerRepository().load();
       expect(reloaded).toEqual(learner);
-      expect(reloaded).not.toHaveProperty(EXPLICIT_REMEDIATION_MARK);
     } finally {
       delete (globalThis as { window?: unknown }).window;
     }

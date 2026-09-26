@@ -700,9 +700,36 @@ content is studyable either way.
 card's own FSRS schedule, review count and last rating, as Anki schedules each
 card of a note separately.
 
-- **Additive.** State saved before card study has no `cards` and loads
-  unchanged. `sanitizeLearnerState` validates card records one by one, and the
-  legacy-identity quarantine also strips card schedules of untrusted concepts.
+- **Additive.** State saved before card study has no cards and loads
+  unchanged. Card records are validated one by one, and the legacy-identity
+  quarantine also strips card schedules of untrusted concepts.
+- **Stored in their own key, `medrecall.study-cards.v1`** (`{ version: 1,
+  cards }`), not in the learner envelope. A browser tab still running main
+  rewrites `medrecall.learner.v1` with only the fields main knows, so cards
+  kept there would be erased by any main save; main never touches the
+  sidecar. `LocalStorageLearnerRepository` owns both keys:
+  - **Load:** the envelope as before; card progress from a valid sidecar
+    (authoritative whenever present; malformed records dropped one by one);
+    else from `cards` inside the envelope — state written by earlier builds of
+    this PR — migrated and moved to the sidecar by the next save; else none.
+    Quarantine runs on the merged state and its result is saved through the
+    repository, so removed cards leave the sidecar and cannot return.
+  - **Save:** the sidecar first, then the envelope without `cards`, and the
+    envelope only if the sidecar write succeeded. localStorage cannot write
+    two keys atomically: if the sidecar write fails nothing is written (the
+    last saved pair stays); if the envelope write fails afterwards, cards are
+    the newer and concept progress the last saved (no card is lost; at most
+    one save's mastery change is). Both return `false`, and the app shows its
+    storage-error banner. A state with no `cards` at all never erases the
+    sidecar of an existing learner.
+  - **Clear** (Reset) removes both keys. A Reset made in a tab still running
+    main removes only the envelope; the sidecar is never used without an
+    envelope, and the next save of a learner with no cards removes it, so
+    cleared card schedules cannot come back.
+  - **Cross-tab:** `LearnerProvider` re-reads both keys on a storage event for
+    either, so an envelope written by a main tab (no cards) never drops this
+    tab's cards, and another tab's card ratings become visible here. Syncing
+    writes only when quarantine removed something, so it cannot loop.
 - **Ratings map one-to-one** (`FSRS_RATING`): Again→Again, Hard→Hard,
   Good→Good, Easy→Easy. This is a separate path (`scheduleAfterRating`) from
   the graded-answer `ratingFor`, which is untouched and never produces Easy.
@@ -837,17 +864,35 @@ retrieval succeeded (INITIAL success leaves WEAK in place). `pendingRemediation
   `LEARNER_STATE_VERSION` is unchanged, so no state is discarded. A present
   but non-boolean value makes the record malformed and it is dropped, like any
   other malformed field.
-- **Mixed versions.** main keeps each progress record exactly as stored but
-  rebuilds the envelope, dropping keys it does not know. A tab still running
-  main after an update would therefore write records whose flag it never
-  updated (a Tutor failure over a stale `false` would lose its remediation).
-  So this build stores an envelope mark (`tutorRemediationExplicit: true`,
-  written only by `serializeLearnerState`), and a stored flag is authoritative
-  only under that mark. Without it — main's state, or anything a main tab
-  last wrote — every flag is re-derived with main's rule, which is exact for
-  whatever main did. State written by an unmerged pre-release build of card
-  study is treated the same way; there the rule can at worst ask for one
-  extra remediation, never lose a pending one.
+- **Mixed versions: per-concept provenance.** A browser tab still running
+  main after this deploys shares `medrecall.learner.v1`. main keeps every
+  concept record exactly as stored (our fields included) but rebuilds the
+  envelope, and its own Tutor attempts leave our flag untouched — so after a
+  main write a stored flag may be stale for the concepts main changed, and
+  still exactly right for every other concept. An envelope-level marker
+  cannot tell those apart (main drops it on any write, which re-derived every
+  flag and could turn a legitimate `true` into `false`). So each record
+  carries `pendingTutorRemediationRevision`: the concept's Tutor schedule
+  revision (`tutorScheduleRevision` = `reps|last_review`) at which the flag
+  was decided, written by `withPendingTutorRemediation` on every transition.
+  Every Tutor attempt in any build runs FSRS and changes that revision; Study
+  never touches the concept schedule. On load:
+  - flag and revision present, and the revision equals the record's current
+    Tutor schedule revision → the stored flag is trusted exactly;
+  - otherwise (field absent: main's own state or an earlier build of this PR;
+    or the revision differs: main made a Tutor attempt on this concept since)
+    → main's rule decides, which is exact for whatever main did.
+
+  Invariant: a stored flag is trusted after an old-main write only if that
+  concept's Tutor schedule revision still matches the one it was recorded
+  at. Tested with main@482824c's real repository and engine, taken from git
+  at test time (`tests/base-main`): main changing another concept keeps a
+  legitimate `true` (and a legitimate `false`); main remediating the concept
+  is not resurrected; a main failure on the concept is recovered.
+
+  One case follows main rather than this build: WEAK from a Study AGAIN made
+  before the Tutor, then a Tutor attempt made *in the main tab*. main's rule
+  then reports pending — exactly the remediation main's own tab showed.
 
 **Concurrency and content.** `captureCardPrecondition` is taken when the
 answer is shown. It records the card's progress version and
