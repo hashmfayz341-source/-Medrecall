@@ -1,4 +1,5 @@
 import type {
+  SourceRef,
   Concept,
   ConceptStatus,
   Curriculum,
@@ -59,6 +60,14 @@ export interface CurriculumOverrides {
   edits: Record<string, ConceptEdit>;
   /** Card wording edits, keyed by retrieval item id. */
   cardEdits: Record<string, CardEdit>;
+  /**
+   * Reviewer decisions that a concept duplicates another: duplicate id →
+   * canonical id. The duplicate is DISCARDED; its teaching pages and its
+   * provenance go to the canonical (see `applyOverrides`).
+   */
+  merges: Record<string, string>;
+  /** Duplicate suggestions a reviewer rejected: concept id → canonical id. */
+  keptApart: Record<string, string>;
   /** Lectures created by the user, beyond the authored course. */
   lectures: Lecture[];
   /** Uploaded documents and the chunks built from them. */
@@ -73,6 +82,8 @@ export function createOverrides(): CurriculumOverrides {
     statusById: {},
     edits: {},
     cardEdits: {},
+    merges: {},
+    keptApart: {},
     lectures: [],
     ingested: [],
     concepts: [],
@@ -97,15 +108,60 @@ function lectureShape(value: unknown): boolean {
   return record(value) && textFields(value, ["id", "courseId", "title"]) && Number.isFinite(value.order) &&
     Array.isArray(value.documents) && value.documents.every(documentShape) && Array.isArray(value.chunks) && value.chunks.every(chunkShape);
 }
+function sourceShape(value: unknown): value is SourceRef {
+  return record(value) && textFields(value, ["courseId", "lectureId", "documentId", "excerpt"]) && Number.isInteger(value.pageNumber) && Number(value.pageNumber) >= 1;
+}
 function conceptShape(value: unknown): boolean {
   if (!record(value) || !textFields(value, ["id", "courseId", "lectureId", "title", "summary"]) || !status(value.status) || !strings(value.prerequisiteIds)) return false;
   if (value.importance !== "CORE" && value.importance !== "SUPPORTING") return false;
-  const source = value.source;
-  if (!record(source) || !textFields(source, ["courseId", "lectureId", "documentId", "excerpt"]) || !Number.isInteger(source.pageNumber) || Number(source.pageNumber) < 1) return false;
+  if (!sourceShape(value.source)) return false;
   return Array.isArray(value.retrievalItems) && value.retrievalItems.length > 0 && value.retrievalItems.every((item) =>
     record(item) && textFields(item, ["id", "conceptId", "prompt", "explanation"]) &&
     ["BASIC", "CLOZE", "MECHANISM", "FREE_RECALL", "CLINICAL", "IMAGE"].includes(String(item.kind)) &&
     strings(item.acceptableAnswers) && Array.isArray(item.requiredKeywords) && item.requiredKeywords.every(strings));
+}
+
+/**
+ * Per-entry validation of a stored id map (`merges`, `keptApart`). A
+ * malformed entry is dropped on its own and named in `dropped`; the rest of
+ * the map, and the rest of the store, load. A container of the wrong type
+ * is treated as empty for the same reason: one bad field must never make
+ * every uploaded document disappear.
+ */
+function sanitizeIdMap(value: unknown, label: string, dropped: string[]): Record<string, string> {
+  if (value === undefined) return {};
+  if (!record(value)) {
+    dropped.push(label);
+    return {};
+  }
+  const kept: Record<string, string> = {};
+  for (const [key, id] of Object.entries(value)) {
+    if (key.length > 0 && typeof id === "string" && id.length > 0 && id !== key) kept[key] = id;
+    else dropped.push(`${label}.${key}`);
+  }
+  return kept;
+}
+
+/**
+ * Derived fields on a stored concept are never trusted. `mergedInto` comes
+ * from `merges` alone and is stripped; `additionalSources` keeps only its
+ * well-formed entries, so a malformed one can never reach the Tutor's TEACH
+ * step or a Study card. Status is left exactly as stored.
+ */
+function sanitizeStoredConcept(concept: Concept, index: number, dropped: string[]): Concept {
+  const { mergedInto, additionalSources, ...rest } = concept as Concept & { mergedInto?: unknown; additionalSources?: unknown };
+  if (mergedInto !== undefined) dropped.push(`concepts[${index}].mergedInto`);
+  if (additionalSources === undefined) return rest;
+  if (!Array.isArray(additionalSources)) {
+    dropped.push(`concepts[${index}].additionalSources`);
+    return rest;
+  }
+  const kept = additionalSources.filter((source, i) => {
+    const ok = sourceShape(source);
+    if (!ok) dropped.push(`concepts[${index}].additionalSources[${i}]`);
+    return ok;
+  });
+  return kept.length > 0 ? { ...rest, additionalSources: kept } : rest;
 }
 
 /**
@@ -115,6 +171,16 @@ function conceptShape(value: unknown): boolean {
  * the user already approved must not silently revert to DRAFT.
  */
 export function migrateOverrides(stored: unknown): CurriculumOverrides | null {
+  return sanitizeOverrides(stored)?.overrides ?? null;
+}
+
+/**
+ * `migrateOverrides`, plus the list of stored entries that were dropped as
+ * malformed (so the repository can write the clean version back). Null only
+ * when the store as a whole is unreadable: unknown version, or the core
+ * decision and content records are not what this app writes.
+ */
+export function sanitizeOverrides(stored: unknown): { overrides: CurriculumOverrides; dropped: string[] } | null {
   if (!record(stored)) return null;
   const value = stored as Partial<CurriculumOverrides>;
   const KNOWN_VERSIONS = [1, 2, 3, CURRICULUM_OVERRIDES_VERSION];
@@ -126,6 +192,9 @@ export function migrateOverrides(stored: unknown): CurriculumOverrides | null {
     (edit.title === undefined || typeof edit.title === "string") && (edit.summary === undefined || typeof edit.summary === "string")))) return null;
   if (value.cardEdits !== undefined && (!record(value.cardEdits) || !Object.values(value.cardEdits).every((edit) => record(edit) &&
     (edit.prompt === undefined || typeof edit.prompt === "string") && (edit.explanation === undefined || typeof edit.explanation === "string")))) return null;
+  const dropped: string[] = [];
+  const merges = sanitizeIdMap(value.merges, "merges", dropped);
+  const keptApart = sanitizeIdMap(value.keptApart, "keptApart", dropped);
   if (value.lectures !== undefined && (!Array.isArray(value.lectures) || !value.lectures.every(lectureShape))) return null;
   if (value.concepts !== undefined && (!Array.isArray(value.concepts) || !value.concepts.every(conceptShape))) return null;
   if (value.ingested !== undefined && (!Array.isArray(value.ingested) || !value.ingested.every((entry) => record(entry) &&
@@ -136,9 +205,11 @@ export function migrateOverrides(stored: unknown): CurriculumOverrides | null {
     statusById: value.statusById,
     edits: value.edits ?? {},
     cardEdits: value.cardEdits ?? {},
+    merges,
+    keptApart,
     lectures: value.lectures ?? [],
     ingested: value.ingested ?? [],
-    concepts: value.concepts ?? [],
+    concepts: (value.concepts ?? []).map((concept, index) => sanitizeStoredConcept(concept, index, dropped)),
   };
   // An old same-name upload could replace a document's text while keeping the
   // previous reviewer's decisions, because both took the same colliding id.
@@ -174,7 +245,7 @@ export function migrateOverrides(stored: unknown): CurriculumOverrides | null {
     migrated.edits = edits;
   }
 
-  return migrated;
+  return { overrides: migrated, dropped };
 }
 
 function applyEdit(concept: Concept, edit: ConceptEdit | undefined): Concept {
@@ -227,6 +298,138 @@ export function editCard(
   return { ...overrides, cardEdits: { ...overrides.cardEdits, [itemId]: { ...existing, ...edit } } };
 }
 
+/** Follow merge chains to the concept that finally survives; null on a cycle. */
+export function resolveMergeTarget(merges: Record<string, string>, conceptId: string): string | null {
+  let current = conceptId;
+  const seen = new Set<string>([current]);
+  while (merges[current] !== undefined) {
+    current = merges[current]!;
+    if (seen.has(current)) return null;
+    seen.add(current);
+  }
+  return current;
+}
+
+export class MergeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MergeError";
+  }
+}
+
+/**
+ * Record that `duplicateId` duplicates `canonicalId`. A reviewer's explicit
+ * decision: the duplicate is DISCARDED (it can never be taught, studied or
+ * scheduled on its own), and `applyOverrides` moves its teaching pages and
+ * provenance to the canonical. The canonical's status is NOT changed —
+ * merging never approves anything.
+ */
+export function mergeConcepts(
+  overrides: CurriculumOverrides,
+  curriculum: Curriculum,
+  duplicateId: string,
+  canonicalId: string,
+): CurriculumOverrides {
+  if (duplicateId === canonicalId) throw new MergeError("a concept cannot be merged into itself");
+  const live = applyOverrides(curriculum, overrides);
+  const duplicate = live.concepts.find((c) => c.id === duplicateId);
+  const canonical = live.concepts.find((c) => c.id === canonicalId);
+  if (!duplicate || !canonical) throw new MergeError("unknown concept");
+  if (duplicate.mergedInto) throw new MergeError("already merged");
+  if (canonical.mergedInto || canonical.status === "DISCARDED") {
+    throw new MergeError("the canonical concept is discarded or merged itself");
+  }
+  const merges = { ...overrides.merges, [duplicateId]: canonicalId };
+  if (resolveMergeTarget(merges, canonicalId) === null) throw new MergeError("merge would form a cycle");
+  const keptApart = { ...overrides.keptApart };
+  delete keptApart[duplicateId];
+  return {
+    ...overrides,
+    merges,
+    keptApart,
+    statusById: { ...overrides.statusById, [duplicateId]: "DISCARDED" },
+  };
+}
+
+/** Undo a merge: the concept returns to DRAFT for review, never straight to ACTIVE. */
+export function unmergeConcept(overrides: CurriculumOverrides, duplicateId: string): CurriculumOverrides {
+  if (overrides.merges[duplicateId] === undefined) return overrides;
+  const merges = { ...overrides.merges };
+  delete merges[duplicateId];
+  return { ...overrides, merges, statusById: { ...overrides.statusById, [duplicateId]: "DRAFT" } };
+}
+
+/**
+ * A reviewer decided two suggested duplicates are different concepts. A
+ * concept that is merged by now (in another tab, since this one loaded) is
+ * left merged: the newer decision wins, and Undo is the explicit way back.
+ */
+export function keepApart(overrides: CurriculumOverrides, conceptId: string, canonicalId: string): CurriculumOverrides {
+  if (overrides.merges[conceptId] !== undefined) return overrides;
+  return { ...overrides, keptApart: { ...overrides.keptApart, [conceptId]: canonicalId } };
+}
+
+/**
+ * Apply merges to composed concepts and chunks: the duplicate is marked and
+ * DISCARDED, the canonical gains the duplicate's source as extra provenance,
+ * and every chunk that taught the duplicate teaches the canonical instead
+ * (so the duplicate's pages remain teaching material for the idea).
+ */
+function applyMerges(
+  concepts: Concept[],
+  lectures: Lecture[],
+  merges: Record<string, string>,
+): { concepts: Concept[]; lectures: Lecture[] } {
+  const ids = new Set(concepts.map((c) => c.id));
+  const target = new Map<string, string>();
+  for (const duplicateId of Object.keys(merges)) {
+    const resolved = resolveMergeTarget(merges, duplicateId);
+    // Dangling or cyclic merges are ignored rather than trusted.
+    if (resolved && resolved !== duplicateId && ids.has(resolved) && ids.has(duplicateId)) target.set(duplicateId, resolved);
+  }
+  if (target.size === 0) return { concepts, lectures };
+
+  const extra = new Map<string, SourceRef[]>();
+  const byId = new Map(concepts.map((c) => [c.id, c]));
+  for (const [duplicateId, canonicalId] of target) {
+    const duplicate = byId.get(duplicateId)!;
+    const list = extra.get(canonicalId) ?? [];
+    list.push(duplicate.source);
+    extra.set(canonicalId, list);
+  }
+  const merged = concepts.map((concept) => {
+    const into = target.get(concept.id);
+    if (into) return { ...concept, status: "DISCARDED" as const, mergedInto: into };
+    const sources = extra.get(concept.id);
+    if (!sources) return concept;
+    const own = `${concept.source.documentId}#${concept.source.pageNumber}`;
+    const seen = new Set<string>([own]);
+    const additionalSources = [...(concept.additionalSources ?? []), ...sources]
+      .filter((s) => {
+        const key = `${s.documentId}#${s.pageNumber}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => a.documentId.localeCompare(b.documentId) || a.pageNumber - b.pageNumber);
+    return { ...concept, additionalSources };
+  });
+  const rewritten = lectures.map((lecture) => ({
+    ...lecture,
+    chunks: lecture.chunks.map((chunk) => {
+      const conceptIds: string[] = [];
+      for (const id of chunk.conceptIds) {
+        const next = target.get(id) ?? id;
+        if (!conceptIds.includes(next)) conceptIds.push(next);
+      }
+      return conceptIds.length === chunk.conceptIds.length && conceptIds.every((id, i) => id === chunk.conceptIds[i])
+        ? chunk
+        : { ...chunk, conceptIds };
+    }),
+  }));
+  return { concepts: merged, lectures: rewritten };
+}
+
 /**
  * Compose the live curriculum: authored content, plus ingested material, plus
  * human edits and approval decisions.
@@ -269,31 +472,41 @@ export function applyOverrides(
     },
   );
 
+  const applied = applyMerges(allConcepts, lectures, overrides.merges);
   return {
-    course: { ...curriculum.course, lectures: lectures.sort((a, b) => a.order - b.order) },
-    concepts: allConcepts,
+    course: { ...curriculum.course, lectures: applied.lectures.sort((a, b) => a.order - b.order) },
+    concepts: applied.concepts,
   };
 }
 
+/**
+ * Record an approval decision. A merged duplicate is DISCARDED for as long
+ * as its merge exists, so a decision about it — including a stale approval
+ * from a tab that has not seen the merge — is not recorded; Undo merge is
+ * the only way back, and it returns the concept to DRAFT.
+ */
 export function setConceptStatus(
   overrides: CurriculumOverrides,
   conceptId: string,
   status: ConceptStatus,
 ): CurriculumOverrides {
+  if (overrides.merges[conceptId] !== undefined) return overrides;
   return {
     ...overrides,
     statusById: { ...overrides.statusById, [conceptId]: status },
   };
 }
 
-/** Approve several candidates at once. */
+/** Approve several candidates at once. Merged duplicates in the list are skipped (see `setConceptStatus`). */
 export function setConceptStatuses(
   overrides: CurriculumOverrides,
   conceptIds: readonly string[],
   status: ConceptStatus,
 ): CurriculumOverrides {
   const statusById = { ...overrides.statusById };
-  for (const id of conceptIds) statusById[id] = status;
+  for (const id of conceptIds) {
+    if (overrides.merges[id] === undefined) statusById[id] = status;
+  }
   return { ...overrides, statusById };
 }
 

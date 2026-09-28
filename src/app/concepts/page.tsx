@@ -4,6 +4,7 @@ import { Suspense, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useLearner } from "@/components/LearnerProvider";
+import { findDuplicateCandidates } from "@/lib/domain/duplicates";
 import { Button, ButtonLink, Card, SectionTitle } from "@/components/ui";
 import type { Concept, ConceptStatus } from "@/lib/domain/types";
 
@@ -24,7 +25,12 @@ function ConceptReview() {
     updateConceptStatus,
     updateConceptStatuses,
     updateConceptText,
+    mergeDuplicate,
+    unmergeDuplicate,
+    keepApartDuplicate,
+    keptApart,
   } = useLearner();
+  const [mergeNotice, setMergeNotice] = useState<string | null>(null);
 
   const params = useSearchParams();
   const documentFilterFromUrl = params.get("document") ?? "";
@@ -41,6 +47,27 @@ function ConceptReview() {
     }
     return map;
   }, [curriculum]);
+
+  // Possible duplicates across documents: suggestions only, decided by the
+  // reviewer with Merge or Keep both. Rejected pairs are not suggested again.
+  const suggestions = useMemo(() => {
+    const byConcept = new Map<string, { canonicalId: string; reason: "title" | "summary"; similarity: number }>();
+    for (const s of findDuplicateCandidates(curriculum)) {
+      if (keptApart[s.conceptId] === s.canonicalId) continue;
+      byConcept.set(s.conceptId, s);
+    }
+    return byConcept;
+  }, [curriculum, keptApart]);
+  const conceptById = useMemo(() => new Map(curriculum.concepts.map((c) => [c.id, c])), [curriculum]);
+
+  function merge(duplicateId: string, canonicalId: string) {
+    try {
+      mergeDuplicate(duplicateId, canonicalId);
+      setMergeNotice(null);
+    } catch (cause) {
+      setMergeNotice(cause instanceof Error ? `Could not merge: ${cause.message}.` : "Could not merge.");
+    }
+  }
 
   const grouped = useMemo(
     () => ({
@@ -184,6 +211,12 @@ function ConceptReview() {
         </div>
       )}
 
+      {mergeNotice && (
+        <p role="alert" data-testid="merge-notice" className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+          {mergeNotice}
+        </p>
+      )}
+
       {!ready ? (
         <p className="mt-8 text-ink-500">Loading…</p>
       ) : (
@@ -211,7 +244,40 @@ function ConceptReview() {
               >
                 <SectionTitle>
                   {concept.importance} · {concept.status}
+                  {concept.mergedInto && " · merged"}
                 </SectionTitle>
+
+                {concept.mergedInto && (
+                  <div data-testid={`merged-${concept.id}`} className="mt-3 rounded-xl border border-ink-200 bg-ink-50 p-4 text-sm text-ink-700">
+                    Merged into{" "}
+                    <strong data-testid={`merged-into-${concept.id}`}>{conceptById.get(concept.mergedInto)?.title ?? concept.mergedInto}</strong>
+                    . Its page now teaches that concept, and its source is kept as extra provenance there.
+                    <div className="mt-3">
+                      <Button variant="secondary" data-testid={`unmerge-${concept.id}`} onClick={() => unmergeDuplicate(concept.id)}>
+                        Undo merge (back to draft)
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {!concept.mergedInto && suggestions.has(concept.id) && (() => {
+                  const suggestion = suggestions.get(concept.id)!;
+                  const canonical = conceptById.get(suggestion.canonicalId);
+                  return canonical ? (
+                    <div data-testid={`duplicate-${concept.id}`} data-canonical={canonical.id} className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                      Possible duplicate of <strong>{canonical.title}</strong> ({documents.get(canonical.source.documentId) ?? canonical.source.documentId}, page {canonical.source.pageNumber}; {canonical.status}) —{" "}
+                      {suggestion.reason === "title" ? "same title" : `${Math.round(suggestion.similarity * 100)}% of the wording in common`}.
+                      <div className="mt-3 flex flex-wrap gap-3">
+                        <Button variant="secondary" data-testid={`merge-${concept.id}`} onClick={() => merge(concept.id, canonical.id)}>
+                          Merge into it
+                        </Button>
+                        <Button variant="secondary" data-testid={`keep-apart-${concept.id}`} onClick={() => keepApartDuplicate(concept.id, canonical.id)}>
+                          Keep both
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null;
+                })()}
 
                 <label className="sr-only" htmlFor={`title-${concept.id}`}>
                   Concept title
@@ -250,6 +316,14 @@ function ConceptReview() {
                   >
                     {concept.source.excerpt}
                   </blockquote>
+                  {concept.additionalSources?.map((source) => (
+                    <div key={`${source.documentId}#${source.pageNumber}`} data-testid={`also-source-${concept.id}`} className="mt-3 text-sm text-ink-600">
+                      <p className="font-semibold text-ink-700">
+                        Also in {documents.get(source.documentId) ?? source.documentId}, page {source.pageNumber}
+                      </p>
+                      <blockquote className="mt-1 border-l-4 border-ink-200 pl-4 text-[0.95rem] leading-relaxed">{source.excerpt}</blockquote>
+                    </div>
+                  ))}
                 </details>
 
                 <div className="mt-6 flex flex-wrap gap-3">

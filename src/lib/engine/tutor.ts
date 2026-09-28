@@ -589,8 +589,12 @@ export function getNextStep(
       // authored lecture and are served in full.
       pages: chunk.generated
         ? pagesForChunk(lecture, chunk).flatMap((page) => {
-            const excerpts = approvedHere.filter(
-              (c) => c.source.pageNumber === page.number,
+            // A concept merged in from another document is taught from this
+            // chunk's pages through the source it had there.
+            const excerpts = approvedHere.flatMap((c) =>
+              [c.source, ...(c.additionalSources ?? [])].filter(
+                (s) => s.documentId === chunk.documentId && s.pageNumber === page.number,
+              ),
             );
             return excerpts.length > 0
               ? [
@@ -598,7 +602,7 @@ export function getNextStep(
                     number: page.number,
                     // Neutral label: the stored heading is unreviewed source.
                     title: `Page ${page.number}`,
-                    text: excerpts.map((c) => c.source.excerpt).join("\n\n"),
+                    text: excerpts.map((s) => s.excerpt).join("\n\n"),
                   },
                 ]
               : [];

@@ -78,6 +78,11 @@ available.
   shows New · Learning · Review from the cards' own FSRS state, plus
   suspended and buried counts. **Options** sets the daily limits: new cards
   per day and reviews per day (learning steps are never limited).
+- **Duplicates across documents** (Review drafts): when two documents yield
+  the same concept, the later one is flagged as a possible duplicate. **Merge
+  into it** discards the duplicate, teaches its page through the surviving
+  concept and keeps its source as extra provenance; **Keep both** dismisses
+  the suggestion; **Undo merge** returns it to draft.
 - **Card browser** (`/study/browse`): every approved card with its concept,
   lecture, source (document · page, the excerpt one tap away, and a link into
   concept review) and Study status. Filter by lecture, card type, concept

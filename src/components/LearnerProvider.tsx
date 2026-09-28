@@ -17,6 +17,9 @@ import {
   editCard,
   editConcept,
   hasLegacyDocumentIdentity,
+  keepApart,
+  mergeConcepts,
+  unmergeConcept,
   setConceptStatus,
   setConceptStatuses,
   type CardEdit,
@@ -32,7 +35,7 @@ import {
   STUDY_CARDS_STORAGE_KEY,
 } from "@/lib/persistence/localStorage";
 import { acceptIncomingLearnerState } from "@/lib/domain/quarantine";
-import { LocalStorageCurriculumRepository, CURRICULUM_STORAGE_KEY } from "@/lib/persistence/curriculumStore";
+import { LocalStorageCurriculumRepository, CURRICULUM_STORAGE_KEY, commitOverrides } from "@/lib/persistence/curriculumStore";
 import type {
   Concept,
   ConceptStatus,
@@ -62,6 +65,14 @@ interface LearnerContextValue {
   updateConceptText: (conceptId: string, edit: ConceptEdit) => void;
   /** Edit one Study card's wording (prompt / explanation); the card id, and so its FSRS history, is kept. */
   updateCardText: (itemId: string, edit: CardEdit) => void;
+  /** Fold a duplicate candidate into the concept it duplicates (it becomes DISCARDED). Throws MergeError. */
+  mergeDuplicate: (duplicateId: string, canonicalId: string) => void;
+  /** Undo a merge: the concept returns to DRAFT. */
+  unmergeDuplicate: (duplicateId: string) => void;
+  /** Reject a duplicate suggestion: the two stay separate concepts. */
+  keepApartDuplicate: (conceptId: string, canonicalId: string) => void;
+  /** Rejected duplicate suggestions (concept id → canonical id). */
+  keptApart: Record<string, string>;
   createLecture: (lecture: Lecture) => void;
   storeIngestedDocument: (
     ingested: IngestedDocument,
@@ -225,11 +236,19 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
 
   const syncFromStorage = useCallback(() => sync(true), [sync]);
 
-  /** Apply a change to curriculum state and persist it in one step. */
+  /**
+   * Apply a change to curriculum state and persist it in one step.
+   *
+   * The change is applied to what is STORED right now, not to this tab's
+   * snapshot: another tab may have merged, kept apart or undone since this
+   * tab last synced, and a stale snapshot written back would silently drop
+   * that decision (a merged duplicate would return as ACTIVE). The snapshot
+   * is the base only when storage has nothing to read.
+   */
   const mutate = useCallback(
     (fn: (current: CurriculumOverrides) => CurriculumOverrides) => {
-      const next = fn(overridesRef.current);
-      if (!curriculumRepo.current.save(next)) setStorageError(true);
+      const { next, saved } = commitOverrides(curriculumRepo.current, overridesRef.current, fn);
+      if (!saved) setStorageError(true);
       overridesRef.current = next;
       setOverrides(next);
     },
@@ -256,6 +275,20 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
 
   const updateCardText = useCallback(
     (itemId: string, edit: CardEdit) => mutate((current) => editCard(current, itemId, edit)),
+    [mutate],
+  );
+
+  const mergeDuplicate = useCallback(
+    (duplicateId: string, canonicalId: string) =>
+      mutate((current) => mergeConcepts(current, pathologyCurriculum, duplicateId, canonicalId)),
+    [mutate],
+  );
+  const unmergeDuplicate = useCallback(
+    (duplicateId: string) => mutate((current) => unmergeConcept(current, duplicateId)),
+    [mutate],
+  );
+  const keepApartDuplicate = useCallback(
+    (conceptId: string, canonicalId: string) => mutate((current) => keepApart(current, conceptId, canonicalId)),
     [mutate],
   );
 
@@ -299,6 +332,10 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
       updateConceptStatuses,
       updateConceptText,
       updateCardText,
+      mergeDuplicate,
+      unmergeDuplicate,
+      keepApartDuplicate,
+      keptApart: overrides.keptApart,
       createLecture,
       storeIngestedDocument,
       resetAll,
@@ -314,6 +351,10 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
       updateConceptStatuses,
       updateConceptText,
       updateCardText,
+      mergeDuplicate,
+      unmergeDuplicate,
+      keepApartDuplicate,
+      overrides.keptApart,
       createLecture,
       storeIngestedDocument,
       resetAll,

@@ -86,6 +86,18 @@ export interface Concept {
   prerequisiteIds: string[];
   source: SourceRef;
   retrievalItems: RetrievalItem[];
+  /**
+   * Set when a reviewer merged this concept into another as a duplicate. The
+   * concept is then DISCARDED and its teaching pages and provenance go to the
+   * canonical concept (see `additionalSources`). Derived from the curriculum
+   * overrides, never stored on the concept itself.
+   */
+  mergedInto?: string;
+  /**
+   * Sources of duplicates merged into this concept: where else the same
+   * idea appears. The concept's own `source` stays the reviewed one.
+   */
+  additionalSources?: SourceRef[];
 }
 
 /**
