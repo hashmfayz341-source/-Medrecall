@@ -1,5 +1,23 @@
 # Roadmap
 
+## V1 — released ✅
+
+MedRecall V1 is the complete Concept-first loop, in production at
+`main` (PR #8 merged): Course → Lectures → Documents → PDF upload → ordered
+page extraction → DRAFT concepts → review / edit → approve / discard →
+duplicate review / merge → ACTIVE concepts only → progressive Tutor teaching
+→ retrieval → grading → remediation → mastery → FSRS scheduling → Today /
+interleaving → Study cards → Show Answer → Again / Hard / Good / Easy →
+persistence → decks and the card browser → source provenance on every card.
+No AI key is required. Everything below is either part of V1 (✅) or
+deferred to V1.1 / V2.
+
+Deferred past V1: hosted model grading (behind the Stage B abuse-control
+prerequisite), Image Occlusion, Anki import/export, complex statistics, AI
+card generation, accounts and sync, hand-editing the prerequisite graph,
+rendered page images in View source, OCR for scanned PDFs, additional
+courses.
+
 ## Milestone 1 — Deterministic tutor ✅
 
 A complete tutor running with no AI key.
@@ -39,7 +57,7 @@ A complete tutor running with no AI key.
       unlock a lecture
 - [x] 147 unit tests, 28 Playwright tests at iPad and desktop viewports
 
-### Milestone 2 follow-through — duplicate candidates (implemented, awaiting review)
+### Milestone 2 follow-through — duplicate candidates ✅ (merged, in production)
 
 - [x] Deterministic, textual detection of duplicate candidates across
       documents (same title, or most summary words in common); suggestions
@@ -51,6 +69,10 @@ A complete tutor running with no AI key.
       duplicate to DRAFT, never to ACTIVE
 - [x] Learner progress and Study cards of a merged duplicate are simply out
       of use (DISCARDED); nothing is deleted or moved
+- [x] Concurrent tabs cannot undo a merge by accident: every curriculum
+      mutation is applied to the current store; one malformed stored merge
+      entry is dropped on its own, never the whole curriculum; summary
+      matching needs at least three content words on both sides
 
 ### Not done in Milestone 2
 
@@ -59,9 +81,9 @@ A complete tutor running with no AI key.
 - OCR for scanned PDFs — rejected with an explicit message instead
 - Creating additional courses (lectures can be created; the course is fixed)
 
-## Milestone 3 — Model-graded free recall (in progress)
+## Milestone 3 — Model-graded free recall (Stage A in V1; hosted grading deferred)
 
-### Stage A — server-side grading boundary (implemented, awaiting review)
+### Stage A — server-side grading boundary ✅ (merged, in production)
 
 - [x] Grading runs server-side behind `POST /api/grade`, not in the browser.
       Remediation is composed on the server from reviewed material (AD-19,
@@ -110,7 +132,7 @@ A complete tutor running with no AI key.
 
 ## Anki experience (product correction: Anki-first learner experience)
 
-### Step 1 — Study session (implemented, awaiting review)
+### Step 1 — Study session ✅ (merged, in production)
 
 - [x] `/study/[lectureId]`: card front, **Show Answer**, back with source
       (document, page, excerpt behind "View source")
@@ -126,7 +148,7 @@ A complete tutor running with no AI key.
       card progress in its own storage key (`medrecall.study-cards.v1`)
 - [x] Dashboard **Study** entry per lecture
 
-### Step 2 — Decks, card browser, custom study (implemented, awaiting review)
+### Step 2 — Decks, card browser, custom study ✅ (merged, in production)
 
 - [x] `/study`: the course as decks (one per lecture, derived — never
       stored), with New / Learning / Review / suspended / buried counts from
