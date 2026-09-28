@@ -213,6 +213,28 @@ export interface CardProgress {
   lastReviewedAt: string | null;
 }
 
+/**
+ * Study-only flags for one card. Neither touches the card's FSRS history or
+ * the concept's mastery: a suspended card simply leaves the Study queue until
+ * it is resumed, and a buried one leaves it until `buriedUntil`.
+ */
+export interface CardFlags {
+  conceptId: string;
+  suspended?: boolean;
+  /** ISO time the burial ends (the next local midnight when it was buried). */
+  buriedUntil?: string;
+}
+
+/** What Study did today, for the daily limits. Reset when the day changes. */
+export interface StudyDayLog {
+  /** Local calendar day, YYYY-MM-DD. */
+  day: string;
+  /** Cards rated for the first time today. */
+  newIntroduced: number;
+  /** Review-queue cards rated today. */
+  reviews: number;
+}
+
 /** Per-learner state. Everything the tutor knows about one student. */
 export interface LearnerState {
   version: number;
@@ -231,4 +253,8 @@ export interface LearnerState {
    * been studied yet.
    */
   cards?: Record<string, CardProgress>;
+  /** Suspend/bury flags keyed by RetrievalItem id. Study-owned, like `cards`. */
+  cardFlags?: Record<string, CardFlags>;
+  /** Today's Study counts for the daily limits. Study-owned, like `cards`. */
+  studyDay?: StudyDayLog;
 }

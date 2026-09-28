@@ -1,12 +1,14 @@
 import { InvalidGradeError, StaleAttemptError } from "@/lib/domain/errors";
 import { applySelfRatingToMastery } from "@/lib/domain/mastery";
 import type {
+  CardFlags,
   CardProgress,
   Concept,
   Curriculum,
   LearnerState,
   RetrievalItem,
   SelfRating,
+  StudyDayLog,
 } from "@/lib/domain/types";
 import {
   contextForSchedule,
@@ -54,9 +56,30 @@ export interface StudyCard {
 }
 
 export interface StudyCounts {
+  /** New cards that will be shown (after the daily limit). */
   new: number;
   learning: number;
+  /** Review cards due now that will be shown (after the daily limit). */
   review: number;
+  suspended: number;
+  buried: number;
+}
+
+/** Simple deck options, in Anki's terms. */
+export interface StudyLimits {
+  /** New cards introduced per local day. */
+  newPerDay: number;
+  /** Review-queue cards rated per local day. Learning steps are never limited. */
+  reviewsPerDay: number;
+}
+
+export const DEFAULT_STUDY_LIMITS: StudyLimits = { newPerDay: 20, reviewsPerDay: 200 };
+
+export interface StudyQueueOptions {
+  /** Apply daily limits; without them every available card is shown. */
+  limits?: StudyLimits;
+  /** Show only cards due now (Learning and Review); no new cards. */
+  dueOnly?: boolean;
 }
 
 export interface StudyQueue {
@@ -66,6 +89,8 @@ export interface StudyQueue {
   next: StudyCard | null;
   /** When the next not-yet-available card becomes due, if any. */
   nextDueAt: Date | null;
+  /** Cards available now but held back by the daily limits. */
+  heldByLimits: { new: number; review: number };
 }
 
 /**
@@ -123,6 +148,86 @@ function cardProgress(learner: LearnerState, concept: Concept, item: RetrievalIt
   return progress && progress.conceptId === concept.id ? progress : null;
 }
 
+/** Every studyable card in the course, lecture by lecture in course order. */
+export function studyCardsForCourse(curriculum: Curriculum): { concept: Concept; item: RetrievalItem }[] {
+  return [...curriculum.course.lectures]
+    .sort((a, b) => a.order - b.order)
+    .flatMap((lecture) => studyCardsForLecture(curriculum, lecture.id));
+}
+
+/* ------------------------------------------------------------------ */
+/* Suspend / bury                                                      */
+/* ------------------------------------------------------------------ */
+
+export function cardFlagsFor(learner: LearnerState, itemId: string): CardFlags | null {
+  return learner.cardFlags?.[itemId] ?? null;
+}
+
+export function isSuspended(flags: CardFlags | null | undefined): boolean {
+  return flags?.suspended === true;
+}
+
+/** Buried until a stored time; expiry is simply that time passing. */
+export function isBuried(flags: CardFlags | null | undefined, now: Date): boolean {
+  if (!flags?.buriedUntil) return false;
+  return new Date(flags.buriedUntil).getTime() > now.getTime();
+}
+
+/** Local calendar day of `at`, as YYYY-MM-DD. */
+export function studyDayKey(at: Date): string {
+  const y = at.getFullYear();
+  const m = String(at.getMonth() + 1).padStart(2, "0");
+  const d = String(at.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+/** The next local midnight after `at`: when a burial made at `at` ends. */
+export function endOfStudyDay(at: Date): Date {
+  return new Date(at.getFullYear(), at.getMonth(), at.getDate() + 1, 0, 0, 0, 0);
+}
+
+function withFlags(
+  curriculum: Curriculum,
+  learner: LearnerState,
+  conceptId: string,
+  itemId: string,
+  update: (flags: CardFlags) => CardFlags | null,
+): LearnerState {
+  // The approval gate: DRAFT/DISCARDED cards are not Study cards at all.
+  const { concept, item } = resolveAttemptTarget(curriculum, conceptId, itemId);
+  const current = learner.cardFlags?.[item.id] ?? { conceptId: concept.id };
+  const next = update({ ...current, conceptId: concept.id });
+  const cardFlags = { ...(learner.cardFlags ?? {}) };
+  if (next && (next.suspended || next.buriedUntil)) cardFlags[item.id] = next;
+  else delete cardFlags[item.id];
+  return { ...learner, cardFlags };
+}
+
+/** Suspend: out of the Study queue until resumed. FSRS history and mastery untouched. */
+export function suspendCard(curriculum: Curriculum, learner: LearnerState, conceptId: string, itemId: string): LearnerState {
+  return withFlags(curriculum, learner, conceptId, itemId, (f) => ({ ...f, suspended: true }));
+}
+
+export function resumeCard(curriculum: Curriculum, learner: LearnerState, conceptId: string, itemId: string): LearnerState {
+  return withFlags(curriculum, learner, conceptId, itemId, ({ suspended: _s, ...f }) => {
+    void _s;
+    return f;
+  });
+}
+
+/** Bury: out of the Study queue until the next local midnight. Deterministic from `now`. */
+export function buryCard(curriculum: Curriculum, learner: LearnerState, conceptId: string, itemId: string, now: Date): LearnerState {
+  if (Number.isNaN(now.getTime())) throw new InvalidGradeError("invalid bury time");
+  return withFlags(curriculum, learner, conceptId, itemId, (f) => ({ ...f, buriedUntil: endOfStudyDay(now).toISOString() }));
+}
+
+export function unburyCard(curriculum: Curriculum, learner: LearnerState, conceptId: string, itemId: string): LearnerState {
+  return withFlags(curriculum, learner, conceptId, itemId, ({ buriedUntil: _b, ...f }) => {
+    void _b;
+    return f;
+  });
+}
+
 /**
  * Build the study queue for a lecture: counts plus the order cards are shown.
  *
@@ -137,18 +242,54 @@ export function buildStudyQueue(
   learner: LearnerState,
   lectureId: string,
   now: Date,
+  options: StudyQueueOptions = {},
+): StudyQueue {
+  return buildStudyQueueFor(curriculum, learner, studyCardsForLecture(curriculum, lectureId), now, options);
+}
+
+/** Today's counts if `learner.studyDay` is for the local day of `now`, else zero. */
+export function studyDayCounts(learner: LearnerState, now: Date): StudyDayLog {
+  const day = studyDayKey(now);
+  const log = learner.studyDay;
+  return log && log.day === day ? log : { day, newIntroduced: 0, reviews: 0 };
+}
+
+/**
+ * The queue over an explicit set of cards (a lecture, the course, or a custom
+ * selection). Suspended and buried cards are counted but never queued. With
+ * `limits`, new cards beyond today's remaining allowance and due reviews
+ * beyond today's remaining allowance are held back (learning cards never
+ * are); `heldByLimits` says how many.
+ */
+export function buildStudyQueueFor(
+  curriculum: Curriculum,
+  learner: LearnerState,
+  cards: { concept: Concept; item: RetrievalItem }[],
+  now: Date,
+  options: StudyQueueOptions = {},
 ): StudyQueue {
   const t = now.getTime();
   const learningNow: StudyCard[] = [];
   const learningAhead: StudyCard[] = [];
   const reviewNow: StudyCard[] = [];
   const fresh: StudyCard[] = [];
+  let suspended = 0;
+  let buried = 0;
   let nextDueAt: Date | null = null;
 
-  for (const { concept, item } of studyCardsForLecture(curriculum, lectureId)) {
+  for (const { concept, item } of cards) {
+    const flags = cardFlagsFor(learner, item.id);
+    if (isSuspended(flags)) {
+      suspended++;
+      continue;
+    }
+    if (isBuried(flags, now)) {
+      buried++;
+      continue;
+    }
     const progress = cardProgress(learner, concept, item);
     if (!progress) {
-      fresh.push({ concept, item, progress: null, queue: "NEW", due: now });
+      if (!options.dueOnly) fresh.push({ concept, item, progress: null, queue: "NEW", due: now });
       continue;
     }
     const due = new Date(progress.schedule.due);
@@ -173,16 +314,30 @@ export function buildStudyQueue(
   reviewNow.sort(byDue);
   learningAhead.sort(byDue);
 
-  const queue = [...learningNow, ...reviewNow, ...fresh, ...learningAhead];
+  // Daily limits: what is left of today's allowance, never below zero.
+  let newAllowed = fresh.length;
+  let reviewAllowed = reviewNow.length;
+  if (options.limits) {
+    const today = studyDayCounts(learner, now);
+    newAllowed = Math.max(0, Math.min(fresh.length, options.limits.newPerDay - today.newIntroduced));
+    reviewAllowed = Math.max(0, Math.min(reviewNow.length, options.limits.reviewsPerDay - today.reviews));
+  }
+  const shownNew = fresh.slice(0, newAllowed);
+  const shownReview = reviewNow.slice(0, reviewAllowed);
+
+  const queue = [...learningNow, ...shownReview, ...shownNew, ...learningAhead];
   return {
     counts: {
-      new: fresh.length,
+      new: shownNew.length,
       learning: learningNow.length + learningAhead.length,
-      review: reviewNow.length,
+      review: shownReview.length,
+      suspended,
+      buried,
     },
     queue,
     next: queue[0] ?? null,
     nextDueAt,
+    heldByLimits: { new: fresh.length - shownNew.length, review: reviewNow.length - shownReview.length },
   };
 }
 
@@ -299,6 +454,15 @@ export function recordCardRating(
     lastReviewedAt: at,
   };
 
+  // Today's tally for the daily limits: a first rating introduces a new card;
+  // rating a Review-queue card is a review. Learning steps count as neither.
+  const today = studyDayCounts(learner, input.now);
+  const studyDay: StudyDayLog = {
+    ...today,
+    newIntroduced: today.newIntroduced + (previous ? 0 : 1),
+    reviews: today.reviews + (previous && queueForSchedule(previous.schedule) === "REVIEW" ? 1 : 0),
+  };
+
   const conceptBefore = ensureProgress(learner, concept.id, input.now);
   const rated = applySelfRatingToMastery(conceptBefore, input.rating, context, at);
   // A Study failure becomes a pending TUTOR remediation only once the Tutor
@@ -312,6 +476,7 @@ export function recordCardRating(
     ...learner,
     progress: { ...learner.progress, [concept.id]: conceptAfter },
     cards: { ...(learner.cards ?? {}), [item.id]: card },
+    studyDay,
   });
 
   return { learner: next, card, concept, item };

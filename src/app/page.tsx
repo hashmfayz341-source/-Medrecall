@@ -48,6 +48,13 @@ export default function Dashboard() {
         </div>
         <div className="flex flex-wrap gap-3">
         <Link
+          href="/study"
+          data-testid="study-browser-link"
+          className="min-h-[3rem] rounded-xl border border-ink-300 bg-white px-5 py-3 text-sm font-semibold text-ink-700"
+        >
+          Study decks
+        </Link>
+        <Link
           href="/ingest"
           data-testid="add-material-link"
           className="min-h-[3rem] rounded-xl border border-ink-300 bg-white px-5 py-3 text-sm font-semibold text-ink-700"
