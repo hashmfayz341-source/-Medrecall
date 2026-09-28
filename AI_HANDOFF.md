@@ -148,6 +148,22 @@ mastery).
 - **Mixed-version tests run main's real code from git** (`tests/base-main`),
   not an imitation of it.
 
+**19. The primary flow is Lecture → Flashcards → Study (AD-28).** Cards are
+generated behind `getGenerationProvider()` only (`POST /api/generate`), one
+DRAFT Concept per card, ids `${document}-p${page}-f${fact}` so a rerun is
+idempotent. Never pad to a requested count; report `shortfall`. Page images
+and figures are ORIGINAL regions of the uploaded PDF, rendered in the browser
+(`lib/visuals/browser.ts`, pdfjs *legacy* build — the current build needs
+`Map.prototype.getOrInsertComputed`, which iPad Safari and the test browser
+lack) and stored in IndexedDB (`lib/persistence/assetStore.ts`); a card
+carries only a `CardImage` reference with provenance. The worker is served
+from `public/pdf.worker.min.mjs` by `scripts/copy-pdf-worker.mjs`
+(prebuild/predev/postinstall) — bundler-emitted worker URLs did not work in
+the production build. The session composer (`lib/engine/session.ts`) orders
+what is shown; it never reads or writes a schedule. Language modes change
+the question scaffolding only; the deterministic generator never translates
+source text.
+
 **18. Duplicate merges are reviewer decisions in the overrides (AD-27).**
 Detection (`findDuplicateCandidates`) is textual and deterministic — never
 call a model for it, and never auto-merge. `mergeConcepts` discards the
@@ -289,7 +305,7 @@ above that interface knows where state lives.
 npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
 ```
 
-564 unit tests, 162 E2E tests (81 per project, iPad and desktop viewports). Mixed-version tests need the base commit 482824c in local git history (a normal clone has it). The E2E suite
+583 unit tests, 172 E2E tests (86 per project, iPad and desktop viewports). Mixed-version tests need the base commit 482824c in local git history (a normal clone has it). The E2E suite
 drives the real UI through the complete demo journey, including the deliberate
 ATP-depletion failure.
 

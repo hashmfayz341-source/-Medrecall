@@ -7,7 +7,7 @@ import { expect, test } from "@playwright/test";
  */
 const MIN = 44;
 
-const pages = ["/", "/ingest", "/concepts", "/study", "/study/browse", "/study/custom"];
+const pages = ["/", "/upload", "/ingest", "/concepts", "/study", "/study/browse", "/study/custom"];
 
 for (const path of pages) {
   test(`interactive targets on ${path} are at least ${MIN}px tall`, async ({ page }) => {

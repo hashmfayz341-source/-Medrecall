@@ -18,6 +18,37 @@ card generation, accounts and sync, hand-editing the prerequisite graph,
 rendered page images in View source, OCR for scanned PDFs, additional
 courses.
 
+## Lecture → flashcards — product correction (implemented, awaiting review)
+
+The default experience is now *Lecture → Flashcards → Study*; Concepts stay
+the internal layer and the Tutor remains a separate feature.
+
+- [x] Home is a lecture library: **Upload lecture** first; each lecture shows
+      its real title (from the file name, editable), card counts and due
+      cards, with Study / Cards; the demo course sits below
+- [x] Generation settings per upload: language (English, Arabic, Arabic +
+      English medical terms — persisted per lecture) and count (20 / 40 /
+      60 / 100 / Custom / Auto); a count is met only when the lecture
+      supports it, never padded, and the shortfall is shown
+- [x] Every page rendered as an image in the browser and stored in
+      IndexedDB; raster figures and vector diagrams detected from pdfjs
+      operator lists; logos, repeated branding, icons and rules rejected
+- [x] Direct card generation behind a third provider role
+      (`getGenerationProvider()`, `POST /api/generate`): definitions,
+      superlatives, mechanisms (consequence blanked, diagram on the back),
+      lists, clozes, image cards on original figures; grounded and
+      de-duplicated; DRAFT until approved
+- [x] Review cards: approve / edit / discard / approve all; View source
+      with excerpt and page image; Generate more (new facts only, FSRS
+      history kept)
+- [x] Study session composer above FSRS: overdue, due and near-due (24 h)
+      cards of other lectures mixed in, one after every four current cards;
+      neutral *Review* chip before the answer, origin after; ratings update
+      the old card's own history
+- [x] RTL layout for Arabic prompts (`dir="auto"`), iPad-sized targets
+- [ ] Not in this step: translated explanations (needs a hosted generator
+      behind Stage B abuse control), OCR, figure cropping beyond geometry
+
 ## Milestone 1 — Deterministic tutor ✅
 
 A complete tutor running with no AI key.
