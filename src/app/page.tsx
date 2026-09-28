@@ -1,262 +1,121 @@
 "use client";
 
-import Link from "next/link";
 import { useMemo } from "react";
 import { useLearner } from "@/components/LearnerProvider";
-import { Button, ButtonLink, Card, MasteryBadge, SectionTitle, Stat } from "@/components/ui";
-import { buildTodayQueue, weakConcepts } from "@/lib/engine/priority";
-import { nextLecture, summarizeLectures } from "@/lib/engine/tutor";
-import { buildStudyQueue, studyCardsForLecture } from "@/lib/engine/study";
-import { draftConcepts } from "@/lib/domain/curriculum";
+import { DemoDashboard } from "@/components/DemoDashboard";
+import { ButtonLink, Card } from "@/components/ui";
+import { useStudySettings } from "@/components/useStudySettings";
+import { pathologyCurriculum } from "@/lib/content/pathology";
+import { lectureDecks } from "@/lib/engine/decks";
+import { eligibleOldReviews } from "@/lib/engine/session";
 
-export default function Dashboard() {
-  const { curriculum, learner, ready, resetAll } = useLearner();
+/*
+ * Home: the learner's own lectures first — upload a PDF, get cards, study.
+ * The authored demo course and its guided Tutor stay available below.
+ */
 
-  const view = useMemo(() => {
+const DEMO_LECTURE_IDS = new Set(pathologyCurriculum.course.lectures.map((l) => l.id));
+
+export default function Home() {
+  const { curriculum, learner, ready } = useLearner();
+  const { limits } = useStudySettings();
+
+  const lectures = useMemo(() => {
     const now = new Date();
-    return {
-      lectures: summarizeLectures(curriculum, learner),
-      study: Object.fromEntries(
-        curriculum.course.lectures.map((lecture) => [
-          lecture.id,
-          {
-            cards: studyCardsForLecture(curriculum, lecture.id).length,
-            counts: buildStudyQueue(curriculum, learner, lecture.id, now).counts,
-          },
-        ]),
-      ),
-      continueWith: nextLecture(curriculum, learner),
-      due: buildTodayQueue(curriculum, learner, now),
-      weak: weakConcepts(curriculum, learner),
-      drafts: draftConcepts(curriculum),
-    };
-  }, [curriculum, learner]);
+    const drafts = new Map<string, number>();
+    for (const concept of curriculum.concepts) {
+      if (concept.status === "DRAFT") drafts.set(concept.lectureId, (drafts.get(concept.lectureId) ?? 0) + 1);
+    }
+    return lectureDecks(curriculum, learner, now, limits)
+      .filter((deck) => !DEMO_LECTURE_IDS.has(deck.lecture.id))
+      .map((deck) => ({
+        ...deck,
+        drafts: drafts.get(deck.lecture.id) ?? 0,
+        // Due or about to be due in this lecture: what FSRS would bring back.
+        due: eligibleOldReviews(curriculum, learner, "__none__", now).filter((r) => r.lecture.id === deck.lecture.id && r.reason !== "near").length,
+      }));
+  }, [curriculum, learner, limits]);
 
   return (
     <main className="mx-auto w-full max-w-5xl px-5 py-8 sm:px-8 sm:py-12">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-sm font-bold uppercase tracking-[0.12em] text-clinical-700">
-            MedRecall
-          </p>
-          <h1 className="mt-1 text-4xl font-bold tracking-tight text-ink-800">
-            {curriculum.course.title}
-          </h1>
+          <p className="text-sm font-bold uppercase tracking-[0.12em] text-clinical-700">MedRecall</p>
+          <h1 className="mt-1 text-4xl font-bold tracking-tight text-ink-800">My lectures</h1>
           <p className="mt-2 max-w-xl text-ink-600">
-            {curriculum.course.description}
+            Upload a lecture PDF, get flashcards made from it, and study them Anki-style. Older cards
+            come back when FSRS says they are due.
           </p>
         </div>
-        <div className="flex flex-wrap gap-3">
-        <Link
-          href="/study"
-          data-testid="study-browser-link"
-          className="min-h-[3rem] rounded-xl border border-ink-300 bg-white px-5 py-3 text-sm font-semibold text-ink-700"
-        >
-          Study decks
-        </Link>
-        <Link
-          href="/ingest"
-          data-testid="add-material-link"
-          className="min-h-[3rem] rounded-xl border border-ink-300 bg-white px-5 py-3 text-sm font-semibold text-ink-700"
-        >
-          Add material
-        </Link>
-        <Link
-          href="/concepts"
-          data-testid="review-drafts-link"
-          className="min-h-[3rem] rounded-xl border border-ink-300 bg-white px-5 py-3 text-sm font-semibold text-ink-700"
-        >
-          Review drafts
-          {view.drafts.length > 0 && (
-            <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-amber-800">
-              {view.drafts.length}
-            </span>
-          )}
-        </Link>
-        </div>
+        <ButtonLink href="/upload" data-testid="upload-lecture">
+          Upload lecture
+        </ButtonLink>
       </header>
 
       {!ready ? (
-        <p className="mt-10 text-ink-500">Loading your progress…</p>
+        <p className="mt-10 text-ink-500">Loading your lectures…</p>
+      ) : lectures.length === 0 ? (
+        <Card className="mt-8 text-center" data-testid="library-empty">
+          <h2 className="text-2xl font-bold text-ink-800">Start with your first lecture</h2>
+          <p className="mx-auto mt-2 max-w-md text-ink-600">
+            Upload Cell Injury.pdf, choose the card language and how many cards you want, and MedRecall
+            builds them from the slides — figures included.
+          </p>
+          <div className="mt-6">
+            <ButtonLink href="/upload" data-testid="upload-first-lecture">
+              Upload a lecture PDF
+            </ButtonLink>
+          </div>
+        </Card>
       ) : (
-        <div className="mt-10 space-y-8">
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <Stat label="Due recall" value={view.due.length} />
-            <Stat
-              label="Weak concepts"
-              value={view.weak.length}
-              tone={view.weak.length > 0 ? "warn" : "default"}
-            />
-            <Stat
-              label="Lectures done"
-              value={`${learner.completedLectureIds.length}/${curriculum.course.lectures.length}`}
-            />
-            <Stat label="Drafts awaiting review" value={view.drafts.length} />
-          </div>
-
-          {/* Continue Learning */}
-          <Card data-testid="continue-learning">
-            <SectionTitle>Continue learning</SectionTitle>
-            {view.continueWith ? (
-              <>
-                <h2 className="mt-2 text-2xl font-bold text-ink-800">
-                  {view.continueWith.title}
+        <ul className="mt-8 space-y-4" data-testid="lecture-library">
+          {lectures.map(({ lecture, total, counts, drafts, due }) => (
+            <li
+              key={lecture.id}
+              data-testid={`library-${lecture.id}`}
+              className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-ink-200 bg-white px-6 py-5 shadow-sm"
+            >
+              <div className="min-w-0">
+                <h2 dir="auto" className="text-2xl font-bold text-ink-800" data-testid={`library-title-${lecture.id}`}>
+                  {lecture.title}
                 </h2>
-                <p className="mt-2 text-ink-600">
-                  MedRecall picks what comes next — new material, a weak concept
-                  from an earlier lecture, or a scheduled review.
+                <p className="mt-1 text-sm font-semibold tabular-nums text-ink-600" data-testid={`library-counts-${lecture.id}`}>
+                  {total} {total === 1 ? "card" : "cards"}
+                  <span className="text-ink-400"> · </span>
+                  <span className="text-clinical-700">{counts.new} new</span>
+                  <span className="text-ink-400"> · </span>
+                  <span className="text-red-700">{counts.learning} learning</span>
+                  <span className="text-ink-400"> · </span>
+                  <span className="text-emerald-700">{counts.review} review</span>
+                  {due > 0 && (
+                    <>
+                      <span className="text-ink-400"> · </span>
+                      <span data-testid={`library-due-${lecture.id}`} className="text-amber-800">{due} due</span>
+                    </>
+                  )}
                 </p>
-                <div className="mt-6">
-                  <ButtonLink
-                    href={`/learn/${view.continueWith.id}`}
-                    data-testid="continue-button"
-                  >
-                    Continue {view.continueWith.title}
+                {drafts > 0 && (
+                  <p className="mt-1 text-sm text-amber-800" data-testid={`library-drafts-${lecture.id}`}>
+                    {drafts} {drafts === 1 ? "card" : "cards"} to review
+                  </p>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <ButtonLink href={`/lectures/${encodeURIComponent(lecture.id)}`} variant="secondary" data-testid={`lecture-cards-${lecture.id}`}>
+                  Cards
+                </ButtonLink>
+                {total > 0 && (
+                  <ButtonLink href={`/study/${encodeURIComponent(lecture.id)}`} data-testid={`study-${lecture.id}`}>
+                    Study
                   </ButtonLink>
-                </div>
-              </>
-            ) : (
-              <p className="mt-2 text-ink-600">Nothing available yet.</p>
-            )}
-          </Card>
-
-          {/* Lectures */}
-          <Card>
-            <SectionTitle>Lectures</SectionTitle>
-            <ul className="mt-4 space-y-3">
-              {view.lectures.map((summary) => (
-                <li
-                  key={summary.lecture.id}
-                  data-testid={`lecture-${summary.lecture.id}`}
-                  className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-ink-200 px-5 py-4"
-                >
-                  <div>
-                    <p className="text-lg font-semibold text-ink-800">
-                      {summary.lecture.order}. {summary.lecture.title}
-                    </p>
-                    {(view.study[summary.lecture.id]?.cards ?? 0) > 0 && (
-                      <p
-                        data-testid={`study-counts-${summary.lecture.id}`}
-                        className="mt-1 text-sm font-semibold tabular-nums"
-                      >
-                        <span className="text-clinical-700">{view.study[summary.lecture.id]!.counts.new} new</span>
-                        <span className="text-ink-400"> · </span>
-                        <span className="text-red-700">{view.study[summary.lecture.id]!.counts.learning} learning</span>
-                        <span className="text-ink-400"> · </span>
-                        <span className="text-emerald-700">{view.study[summary.lecture.id]!.counts.review} review</span>
-                      </p>
-                    )}
-                    <p className="mt-1 text-sm text-ink-500">
-                      {summary.attemptedConcepts}/{summary.totalConcepts} concepts
-                      started
-                      {summary.weakConcepts > 0 && (
-                        <span className="text-red-600">
-                          {" "}
-                          · {summary.weakConcepts} weak
-                        </span>
-                      )}
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-3">
-                  {(view.study[summary.lecture.id]?.cards ?? 0) > 0 && (
-                    <ButtonLink
-                      href={`/study/${summary.lecture.id}`}
-                      data-testid={`study-${summary.lecture.id}`}
-                    >
-                      Study
-                    </ButtonLink>
-                  )}
-                  {summary.complete ? (
-                    <span
-                      data-testid={`complete-${summary.lecture.id}`}
-                      className="rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-bold uppercase tracking-wide text-emerald-700"
-                    >
-                      Complete
-                    </span>
-                  ) : summary.unlocked ? (
-                    <ButtonLink
-                      href={`/learn/${summary.lecture.id}`}
-                      variant="secondary"
-                      data-testid={`start-${summary.lecture.id}`}
-                    >
-                      {summary.attemptedConcepts > 0 ? "Resume" : "Start"}
-                    </ButtonLink>
-                  ) : (
-                    <span
-                      data-testid={`locked-${summary.lecture.id}`}
-                      className="rounded-full border border-ink-200 bg-ink-100 px-4 py-2 text-xs font-bold uppercase tracking-wide text-ink-500"
-                    >
-                      Locked
-                    </span>
-                  )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </Card>
-
-          <div className="grid gap-8 lg:grid-cols-2">
-            {/* Due recall */}
-            <Card data-testid="due-recall">
-              <SectionTitle>Due recall</SectionTitle>
-              {view.due.length === 0 ? (
-                <p className="mt-3 text-ink-500">
-                  Nothing due. Reviews appear here when FSRS schedules them.
-                </p>
-              ) : (
-                <ul className="mt-4 space-y-3">
-                  {view.due.slice(0, 6).map(({ concept, progress }) => (
-                    <li
-                      key={concept.id}
-                      className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-ink-200 px-4 py-3"
-                    >
-                      <span className="font-medium text-ink-700">
-                        {concept.title}
-                      </span>
-                      <MasteryBadge state={progress.mastery} />
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Card>
-
-            {/* Weak concepts */}
-            <Card data-testid="weak-concepts">
-              <SectionTitle>Weak concepts</SectionTitle>
-              {view.weak.length === 0 ? (
-                <p className="mt-3 text-ink-500">No weak concepts right now.</p>
-              ) : (
-                <ul className="mt-4 space-y-3">
-                  {view.weak.map(({ concept }) => (
-                    <li
-                      key={concept.id}
-                      data-testid={`weak-${concept.id}`}
-                      className="rounded-xl border border-red-200 bg-red-50 px-4 py-3"
-                    >
-                      <p className="font-semibold text-ink-800">{concept.title}</p>
-                      <p className="mt-1 text-sm text-ink-600">
-                        From{" "}
-                        {
-                          curriculum.course.lectures.find(
-                            (l) => l.id === concept.lectureId,
-                          )?.title
-                        }
-                        {" · will be interleaved into later material"}
-                      </p>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Card>
-          </div>
-
-          <div className="pt-2">
-            <Button variant="danger" data-testid="reset-demo" onClick={resetAll}>
-              Reset demo progress
-            </Button>
-          </div>
-        </div>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
       )}
+
+      <DemoDashboard />
     </main>
   );
 }
