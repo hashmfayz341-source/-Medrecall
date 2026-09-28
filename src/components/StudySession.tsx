@@ -57,6 +57,14 @@ export function StudySession({ lectureId }: { lectureId: string }) {
   const precondition = useRef<CardRatingPrecondition | null>(null);
   /** Precondition keys already rated from this screen: a second tap is ignored. */
   const rated = useRef(new Set<string>());
+  // The keys describe card versions. Once the learner state has moved on —
+  // this rating was applied, another tab rated, or the learner was Reset (a
+  // fresh card then has exactly the key its earlier first rating had) — they
+  // are stale, and keeping them would swallow a legitimate rating. A double
+  // tap is still caught: both taps run before React re-renders.
+  useEffect(() => {
+    rated.current.clear();
+  }, [learner]);
 
   // Learning cards come due within minutes; keep "now" moving.
   useEffect(() => {

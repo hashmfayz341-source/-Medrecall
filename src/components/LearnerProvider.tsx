@@ -114,7 +114,7 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
    * `syncFromStorage()`.
    */
   const sync = useCallback(
-    (curriculumChanged: boolean) => {
+    (curriculumChanged: boolean, learnerRemoved = false) => {
       // Always refresh curriculum first: the quarantine decision depends on
       // which document identities are currently known to be untrusted.
       const latestOverrides = curriculumRepo.current.load();
@@ -136,10 +136,19 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
       //
       // acceptLearnerState only writes when something was actually removed,
       // so repeating this is idempotent and cannot loop.
-      acceptLearnerState(
-        learnerRepo.current.load() ?? learnerRef.current,
-        overridesRef.current,
-      );
+      const stored = learnerRepo.current.load();
+      if (!stored && learnerRemoved) {
+        // The learner envelope was deliberately removed — a Reset in another
+        // tab, possibly one still running main. That is a reset here too:
+        // keeping this tab's copy would let its next rating write the
+        // cleared progress and card schedules straight back.
+        const fresh = createLearnerState();
+        learnerRef.current = fresh;
+        lastSaveFailed.current = false;
+        setLearnerState(fresh);
+        return;
+      }
+      acceptLearnerState(stored ?? learnerRef.current, overridesRef.current);
     },
     [acceptLearnerState],
   );
@@ -178,7 +187,10 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
         event.key === STUDY_CARDS_STORAGE_KEY ||
         event.key === null;
       if (!curriculumChanged && !learnerChanged) return;
-      syncRef.current(curriculumChanged);
+      // `newValue === null` is a removal; `key === null` is localStorage.clear().
+      const learnerRemoved =
+        (event.key === STORAGE_KEY && event.newValue === null) || event.key === null;
+      syncRef.current(curriculumChanged, learnerRemoved);
     }
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);

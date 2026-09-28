@@ -134,11 +134,17 @@ mastery).
   which stamps `pendingTutorRemediationRevision`: a stored flag is trusted on
   load only while that revision matches the concept's Tutor schedule, because
   a tab still running main keeps the flag as stored while changing the concept.
-- **Card progress lives in its own key (`medrecall.study-cards.v1`).** Never
-  move it back into `medrecall.learner.v1`: a tab still running main rewrites
-  that envelope without it. Persist learner state only through
-  `LocalStorageLearnerRepository`, which writes the sidecar first and clears
-  both keys on reset. Mixed-version tests run main's real code from git
+- **Card progress lives in its own key (`medrecall.study-cards.v1`), bound
+  to the learner by a generation id.** Never move it back into
+  `medrecall.learner.v1`: a tab still running main rewrites that envelope
+  without it. Persist learner state only through
+  `LocalStorageLearnerRepository`, which mints and stamps the generation,
+  writes the sidecar first and clears both keys on reset. A storage event
+  that removes the envelope is a Reset from another tab: reset memory, never
+  keep the old copy.
+- **Validate schedules against ts-fsrs, not against "is a number".** `state`
+  must be a real `State` value and memory states must meet `next_state`'s
+  precondition; anything else throws inside FSRS on the next rating. Mixed-version tests run main's real code from git
   (`tests/base-main`), not an imitation of it.
 - **A card rating is for the content that was shown.**
   `captureCardPrecondition` includes `gradingTargetFingerprint`, and any edit,
@@ -241,7 +247,7 @@ above that interface knows where state lives.
 npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
 ```
 
-491 unit tests, 124 E2E tests (62 per project, iPad and desktop viewports). Mixed-version tests need the base commit 482824c in local git history (a normal clone has it). The E2E suite
+509 unit tests, 128 E2E tests (64 per project, iPad and desktop viewports). Mixed-version tests need the base commit 482824c in local git history (a normal clone has it). The E2E suite
 drives the real UI through the complete demo journey, including the deliberate
 ATP-depletion failure.
 

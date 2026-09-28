@@ -15,6 +15,7 @@ import {
   LocalStorageLearnerRepository,
   STORAGE_KEY,
   STUDY_CARDS_STORAGE_KEY,
+  STUDY_CARDS_VERSION,
   sanitizeStudyCards,
 } from "@/lib/persistence/localStorage";
 import { openOldMainTab, type OldLearnerState, type OldMainTab } from "../base-main/oldMain";
@@ -250,15 +251,20 @@ describe("Part 2: Card FSRS survives an old-main write (sidecar)", () => {
 
   it("a valid sidecar is authoritative over envelope `cards`", () => {
     const fresh = studiedCard();
-    const stale = { ...fresh, cards: { "c-hypoxia-1": { ...fresh.cards!["c-hypoxia-1"]!, reviews: 1 } } };
     current().save(fresh);
-    store.set(STORAGE_KEY, JSON.stringify(stale)); // e.g. an older PR #6 tab wrote cards in the envelope
+    // An older PR #6 tab (cards in the envelope, no sidecar) rewrites the
+    // envelope: like main it keeps each concept record as stored — the
+    // generation stamps included — and knows no envelope-level generation.
+    const written = JSON.parse(store.get(STORAGE_KEY)!);
+    delete written.generation;
+    written.cards = { "c-hypoxia-1": { ...fresh.cards!["c-hypoxia-1"]!, reviews: 1 } };
+    store.set(STORAGE_KEY, JSON.stringify(written));
     expect(reload().cards).toEqual(fresh.cards);
   });
 
   it("malformed sidecar: unreadable → envelope cards (or none); bad records dropped one by one", () => {
     const s = studiedCard();
-    for (const bad of ["{not json", "[]", "null", JSON.stringify({ version: 2, cards: {} }), JSON.stringify({ version: 1, cards: [] })]) {
+    for (const bad of ["{not json", "[]", "null", JSON.stringify({ version: 1, cards: {} }), JSON.stringify({ version: STUDY_CARDS_VERSION, cards: {} }), JSON.stringify({ version: STUDY_CARDS_VERSION, generation: "g", cards: [] })]) {
       store.clear();
       store.set(STORAGE_KEY, JSON.stringify(s));
       store.set(STUDY_CARDS_STORAGE_KEY, bad);
@@ -269,7 +275,8 @@ describe("Part 2: Card FSRS survives an old-main write (sidecar)", () => {
     }
     const good = s.cards!["c-hypoxia-1"]!;
     const result = sanitizeStudyCards({
-      version: 1,
+      version: STUDY_CARDS_VERSION,
+      generation: "g",
       cards: {
         "c-hypoxia-1": good,
         "c-rev-1": { ...good, itemId: "c-rev-1", conceptId: REV, reviews: -1 },
@@ -296,6 +303,15 @@ describe("Part 2: Card FSRS survives an old-main write (sidecar)", () => {
     expect(reload().cards?.["c-hypoxia-1"]).toEqual(s.cards!["c-hypoxia-1"]);
   });
 
+  it("a learner with no progress records but an (empty) sidecar round-trips: the envelope's own generation binds it", () => {
+    // Quarantine can remove every concept record and every card, leaving
+    // `cards: {}`; with no record to carry a stamp, the envelope field does.
+    const empty: LearnerState = { ...createLearnerState(), cards: {} };
+    expect(current().save(empty)).toBe(true);
+    expect(store.has(STUDY_CARDS_STORAGE_KEY)).toBe(true);
+    expect(reload()).toEqual(empty);
+  });
+
   it("clear() removes both the learner envelope and the Study sidecar", () => {
     current().save(studiedCard());
     expect(store.has(STUDY_CARDS_STORAGE_KEY)).toBe(true);
@@ -303,6 +319,32 @@ describe("Part 2: Card FSRS survives an old-main write (sidecar)", () => {
     expect(store.has(STORAGE_KEY)).toBe(false);
     expect(store.has(STUDY_CARDS_STORAGE_KEY)).toBe(false);
     expect(current().load()).toBeNull();
+  });
+
+  it("M1: old main Reset → old main creates and saves a fresh Tutor learner → this build reloads: the old sidecar does NOT attach", () => {
+    current().save(studiedCard());
+    expect(reload().cards?.["c-hypoxia-1"]).toBeDefined();
+
+    old.clear();
+    // main starts a fresh learner from nothing and works in the Tutor.
+    const fresh: OldLearnerState = { version: 1, progress: {}, taughtChunkIds: [], completedChunkIds: [], completedLectureIds: [], injectedByChunk: {} };
+    let o = old.markChunkTaught(fresh, CHUNK1);
+    o = old.answer(o, { conceptId: HYPOXIA, itemId: "c-hypoxia-1", answer: ANSWERS[HYPOXIA]!, context: "INITIAL", chunkId: CHUNK1, now: at(60) });
+    expect(old.save(o)).toBe(true);
+    expect(store.has(STUDY_CARDS_STORAGE_KEY)).toBe(true); // main never touches the sidecar
+
+    const back = reload();
+    expect(back.progress[HYPOXIA]!.schedule.reps).toBe(1);
+    expect(back.cards ?? {}).toEqual({});
+    expect(buildStudyQueue(C, back, L1, at(61)).counts.learning).toBe(0);
+
+    // The next save of this build replaces the orphan; the old cards never return.
+    expect(current().save(back)).toBe(true);
+    expect(reload().cards ?? {}).toEqual({});
+    const rated = study(back, "c-hypoxia-1", "GOOD", at(62));
+    expect(current().save(rated)).toBe(true);
+    expect(Object.keys(reload().cards!)).toEqual(["c-hypoxia-1"]);
+    expect(reload().cards!["c-hypoxia-1"]!.reviews).toBe(1);
   });
 
   it("a Reset in a stale main tab (envelope removed) leaves no ghost card schedules", () => {

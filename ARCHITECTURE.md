@@ -703,33 +703,63 @@ card of a note separately.
 - **Additive.** State saved before card study has no cards and loads
   unchanged. Card records are validated one by one, and the legacy-identity
   quarantine also strips card schedules of untrusted concepts.
-- **Stored in their own key, `medrecall.study-cards.v1`** (`{ version: 1,
-  cards }`), not in the learner envelope. A browser tab still running main
-  rewrites `medrecall.learner.v1` with only the fields main knows, so cards
-  kept there would be erased by any main save; main never touches the
-  sidecar. `LocalStorageLearnerRepository` owns both keys:
-  - **Load:** the envelope as before; card progress from a valid sidecar
-    (authoritative whenever present; malformed records dropped one by one);
-    else from `cards` inside the envelope — state written by earlier builds of
-    this PR — migrated and moved to the sidecar by the next save; else none.
+- **Stored in their own key, `medrecall.study-cards.v1`** (`{ version: 2,
+  generation, cards }`), not in the learner envelope. A browser tab still
+  running main rewrites `medrecall.learner.v1` with only the fields main
+  knows, so cards kept there would be erased by any main save; main never
+  touches the sidecar. `LocalStorageLearnerRepository` owns both keys.
+- **Bound by a learner generation.** The mere existence of an envelope never
+  attaches a sidecar: a Reset in a main tab removes only the envelope, and
+  main's next fresh learner must not inherit the old cards. The generation is
+  a random id (never a timestamp), minted by this build's first save of a
+  learner that has none, written in the envelope's own `generation` field and
+  stamped as `generation` on every stored concept record, and written into
+  the sidecar. main drops the envelope field but keeps every concept record
+  as stored, so the stamps survive an ordinary main write; a Reset, in any
+  build, removes every record, so nothing survives it. A sidecar is accepted
+  only when the envelope carries its generation (field or any stamp). The
+  stamp is a persistence-only field, stripped on load, so in-memory state and
+  types are unchanged. A version-1 sidecar (unmerged preview builds of this
+  PR) has no generation and is treated as unbound.
+  - **Load:** the envelope as before; card progress from a valid sidecar of
+    the envelope's generation (malformed records dropped one by one); else
+    from `cards` inside the envelope — state written by earlier builds of this
+    PR — migrated and moved to the sidecar by the next save; else none.
     Quarantine runs on the merged state and its result is saved through the
     repository, so removed cards leave the sidecar and cannot return.
-  - **Save:** the sidecar first, then the envelope without `cards`, and the
+  - **Save:** the generation is the stored envelope's (field or first stamp),
+    or new. The sidecar first, then the envelope without `cards`, and the
     envelope only if the sidecar write succeeded. localStorage cannot write
     two keys atomically: if the sidecar write fails nothing is written (the
     last saved pair stays); if the envelope write fails afterwards, cards are
     the newer and concept progress the last saved (no card is lost; at most
-    one save's mastery change is). Both return `false`, and the app shows its
-    storage-error banner. A state with no `cards` at all never erases the
-    sidecar of an existing learner.
-  - **Clear** (Reset) removes both keys. A Reset made in a tab still running
-    main removes only the envelope; the sidecar is never used without an
-    envelope, and the next save of a learner with no cards removes it, so
-    cleared card schedules cannot come back.
+    one save's mastery change is; both carry one generation). Both return
+    `false`, and the app shows its storage-error banner. A state with no
+    `cards` at all never erases the sidecar of the same generation; a sidecar
+    of another generation is an orphan and is removed. Two tabs minting a
+    generation for the same new learner in the same instant would leave one
+    sidecar an orphan; the window is a single save.
+  - **Clear** (Reset) removes both keys.
   - **Cross-tab:** `LearnerProvider` re-reads both keys on a storage event for
     either, so an envelope written by a main tab (no cards) never drops this
-    tab's cards, and another tab's card ratings become visible here. Syncing
-    writes only when quarantine removed something, so it cannot loop.
+    tab's cards, and another tab's card ratings become visible here. A
+    storage event that *removed* the envelope (`newValue === null`, or
+    `localStorage.clear()`) is a Reset made elsewhere — a current tab or a
+    main tab — and resets this tab's in-memory learner at once, so its next
+    rating cannot write the cleared progress and cards back. Syncing writes
+    only when quarantine removed something, so it cannot loop.
+- **Schedules are validated against the installed FSRS.** `state` must be one
+  of ts-fsrs's own `State` values (New, Learning, Review, Relearning), and a
+  card with a memory state must meet the library's `next_state` precondition
+  (difficulty ≥ 1 and stability ≥ `S_MIN`; an empty memory state, 0/0, is a
+  New card). A stored `state: 99` used to pass validation and then throw
+  inside FSRS on the next rating, taking the Study session down; it is now
+  dropped on load like any malformed record — that card alone, with the
+  learner's other cards and concept progress kept. The same validator covers
+  the Tutor's concept schedules; every schedule real `main@482824c` writes
+  (19,614 checked) satisfies it. Counters such as `learning_steps`, `reps`
+  and `lapses` are still only required to be finite: FSRS tolerates
+  out-of-range values there without throwing.
 - **Ratings map one-to-one** (`FSRS_RATING`): Again→Again, Hard→Hard,
   Good→Good, Easy→Easy. This is a separate path (`scheduleAfterRating`) from
   the graded-answer `ratingFor`, which is untouched and never produces Easy.

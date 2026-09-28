@@ -61,6 +61,8 @@ async function writerTab(context: BrowserContext) {
   await page.goto("/icon.svg");
   return {
     set: (key: string, value: string) => page.evaluate(([k, v]) => localStorage.setItem(k!, v!), [key, value]),
+    remove: (key: string) => page.evaluate((k) => localStorage.removeItem(k), key),
+    get: (key: string) => page.evaluate((k) => localStorage.getItem(k), key),
   };
 }
 
@@ -179,8 +181,11 @@ test("a Study sidecar change made in another tab is visible here (sidecar-only s
   await expect(page.getByTestId("count-learning")).toHaveText("1");
   expect(await count(page, "new")).toBe(newAtStart - 1);
 
-  // Another tab writes ONLY the sidecar: no card progress at all.
-  await (await writerTab(context)).set(SK, JSON.stringify({ version: 1, cards: {} }));
+  // Another tab writes ONLY the sidecar: no card progress at all (bound to
+  // this learner, as a current-build tab's write would be).
+  const writer = await writerTab(context);
+  const current = JSON.parse((await writer.get(SK))!) as { version: number; generation: string };
+  await writer.set(SK, JSON.stringify({ ...current, cards: {} }));
   await expect(page.getByTestId("count-learning")).toHaveText("0");
   expect(await count(page, "new")).toBe(newAtStart);
 });
@@ -198,4 +203,71 @@ test("Reset clears the learner envelope AND the Study sidecar: no ghost card sch
   await page.goto(`/study/${L1}`);
   await expect(page.getByTestId("count-learning")).toHaveText("0");
   expect(await raw(page, SK)).toBeNull();
+});
+
+test("M1: a Reset in another current-build tab resets this tab at once; a later rating cannot resurrect the old cards", async ({ page, context }) => {
+  await page.goto(`/study/${L1}`);
+  const newAtStart = await count(page, "new");
+  await page.getByTestId("show-answer").click();
+  await page.getByTestId("rate-again").click();
+  await expect(page.getByTestId("count-learning")).toHaveText("1");
+
+  const other = await context.newPage();
+  await other.goto("/");
+  await other.getByTestId("reset-demo").click();
+  await expect.poll(() => other.evaluate(() => localStorage.getItem("medrecall.learner.v1"))).toBeNull();
+
+  // This tab saw the deletion and dropped its in-memory learner.
+  await expect(page.getByTestId("count-learning")).toHaveText("0");
+  expect(await count(page, "new")).toBe(newAtStart);
+
+  // Its next rating starts a fresh learner: exactly one card, nothing stale.
+  const item = (await page.getByTestId("study-card").getAttribute("data-item-id"))!;
+  await page.getByTestId("show-answer").click();
+  await page.getByTestId("rate-good").click();
+  await expect(page.getByTestId("study-card")).not.toHaveAttribute("data-item-id", item);
+  const cards = await storedCards(page);
+  expect(Object.keys(cards)).toEqual([item]);
+  expect(cards[item]!.reviews).toBe(1);
+  const envelope = JSON.parse((await raw(page, LK))!);
+  expect(Object.keys(envelope.progress)).toHaveLength(1);
+  await expect(other.getByTestId("study-" + L1)).toBeVisible();
+});
+
+test("M1: a stale main tab Resets and then starts a fresh learner: the old cards never attach to it", async ({ page, context }) => {
+  await page.goto(`/study/${L1}`);
+  const newAtStart = await count(page, "new");
+  await page.getByTestId("show-answer").click();
+  await page.getByTestId("rate-again").click();
+  await expect(page.getByTestId("count-learning")).toHaveText("1");
+  const writer = await writerTab(context);
+
+  // main's Reset removes only the envelope (it knows no sidecar)…
+  await writer.remove(LK);
+  await expect(page.getByTestId("count-learning")).toHaveText("0");
+  expect(await count(page, "new")).toBe(newAtStart);
+  expect(await writer.get(SK)).not.toBeNull();
+
+  // …then main creates a fresh learner and answers a Tutor question.
+  const fresh = await oldMainWrite(
+    JSON.stringify({ version: 1, progress: {}, taughtChunkIds: [], completedChunkIds: [], completedLectureIds: [], injectedByChunk: {} }),
+    (s, tab) => tab.answer(tab.markChunkTaught(s, "chunk-ci-1"), {
+      conceptId: HYPOXIA, itemId: "c-hypoxia-1", answer: ANSWERS[HYPOXIA]!, context: "INITIAL", chunkId: "chunk-ci-1", now: new Date(),
+    }),
+  );
+  await writer.set(LK, fresh);
+  await expect(page.getByTestId("count-learning")).toHaveText("0");
+  expect(await count(page, "new")).toBe(newAtStart);
+  await page.reload();
+  await expect(page.getByTestId("count-learning")).toHaveText("0");
+  expect(await count(page, "new")).toBe(newAtStart);
+  expect(JSON.parse((await raw(page, LK))!).progress[HYPOXIA].schedule.reps).toBe(1); // main's learner is the one in use
+
+  // A rating now belongs to main's fresh learner: one card, the old one gone.
+  await page.getByTestId("show-answer").click();
+  await page.getByTestId("rate-good").click();
+  const cards = await storedCards(page);
+  expect(Object.keys(cards)).toEqual(["c-hypoxia-1"]);
+  expect(cards["c-hypoxia-1"]!.reviews).toBe(1);
+  expect(cards["c-hypoxia-1"]!.lastRating).toBe("GOOD");
 });
