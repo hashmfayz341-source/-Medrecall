@@ -699,8 +699,10 @@ content is studyable either way.
 **Decision.** Extraction de-duplicates by title within one document only;
 across documents the same idea arrives twice. Detection
 (`lib/domain/duplicates.ts`) is deterministic and purely textual — equal
-normalised titles, or summary content words with Jaccard overlap ≥ 0.6 —
-and only ever a suggestion. Merging is a reviewer's explicit decision
+normalised titles, or summary content words with Jaccard overlap ≥ 0.6 when
+both summaries have at least three content words (a one-word summary such
+as "cells" overlaps itself completely and says nothing) — and only ever a
+suggestion. Merging is a reviewer's explicit decision
 recorded in the curriculum overrides (`merges`: duplicate → canonical;
 `keptApart`: rejected suggestions), like approval and edits (AD-16).
 
@@ -728,6 +730,22 @@ recorded in the curriculum overrides (`merges`: duplicate → canonical;
   ignored rather than trusted.
 - Detection ignores DISCARDED and merged concepts and never pairs two
   concepts of the same document.
+- **Concurrent tabs cannot undo a decision by accident.** Every curriculum
+  mutation is applied to what is stored *now* (`commitOverrides`), never to
+  the tab's in-memory snapshot: a tab that has not seen another tab's merge
+  and then edits an unrelated title, approves, or clicks Keep both rebases
+  that decision onto the current store, so the merge stays. A decision about
+  a merged duplicate (approve, Keep both) is not recorded while the merge
+  exists; Undo merge is the explicit way back. No timestamps or backend are
+  involved; the snapshot is used only when storage has nothing to read.
+- **Malformed stored merge state is isolated, never fatal.** `merges` and
+  `keptApart` are validated entry by entry: a malformed entry is dropped on
+  its own and the cleaned store is written back; documents, concepts and
+  every other decision load. `mergedInto` and `additionalSources` are
+  derived fields and are never trusted from storage — `mergedInto` is
+  stripped (the merge map is the only source), and only well-formed
+  `additionalSources` entries are kept — so nothing malformed can reach the
+  Tutor's TEACH step or a Study card, and recovery never changes a status.
 
 ## AD-26 — Decks, browser, suspend/bury, custom study: derived over Concepts
 

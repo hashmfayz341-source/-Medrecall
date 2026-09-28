@@ -35,7 +35,7 @@ import {
   STUDY_CARDS_STORAGE_KEY,
 } from "@/lib/persistence/localStorage";
 import { acceptIncomingLearnerState } from "@/lib/domain/quarantine";
-import { LocalStorageCurriculumRepository, CURRICULUM_STORAGE_KEY } from "@/lib/persistence/curriculumStore";
+import { LocalStorageCurriculumRepository, CURRICULUM_STORAGE_KEY, commitOverrides } from "@/lib/persistence/curriculumStore";
 import type {
   Concept,
   ConceptStatus,
@@ -236,11 +236,19 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
 
   const syncFromStorage = useCallback(() => sync(true), [sync]);
 
-  /** Apply a change to curriculum state and persist it in one step. */
+  /**
+   * Apply a change to curriculum state and persist it in one step.
+   *
+   * The change is applied to what is STORED right now, not to this tab's
+   * snapshot: another tab may have merged, kept apart or undone since this
+   * tab last synced, and a stale snapshot written back would silently drop
+   * that decision (a merged duplicate would return as ACTIVE). The snapshot
+   * is the base only when storage has nothing to read.
+   */
   const mutate = useCallback(
     (fn: (current: CurriculumOverrides) => CurriculumOverrides) => {
-      const next = fn(overridesRef.current);
-      if (!curriculumRepo.current.save(next)) setStorageError(true);
+      const { next, saved } = commitOverrides(curriculumRepo.current, overridesRef.current, fn);
+      if (!saved) setStorageError(true);
       overridesRef.current = next;
       setOverrides(next);
     },

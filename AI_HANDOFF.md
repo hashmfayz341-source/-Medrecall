@@ -155,6 +155,19 @@ duplicate and rewrites its chunks to the canonical; it must never change the
 canonical's status. Undo returns to DRAFT. Do not delete learner records of a
 merged concept.
 
+- **Mutate against the store, not the snapshot.** `LearnerProvider.mutate`
+  goes through `commitOverrides`, which applies the operation to what is
+  stored right now. Never write `overridesRef.current` (or any in-memory
+  copy) back as-is: a stale tab would silently drop another tab's merge,
+  Keep both or Undo. Keep every mutation an id-keyed operation so it rebases.
+- **Validate merge state per entry.** `sanitizeOverrides` drops a malformed
+  `merges`/`keptApart` entry or `additionalSources` item on its own and
+  strips a stored `mergedInto`; it must never reject the whole store for
+  one bad record, and never change a status while recovering.
+- **Summary matching needs substance.** `MIN_SUMMARY_CONTENT_WORDS` (3, on
+  both sides) gates the Jaccard rule; title equality is not gated. Do not
+  lower it, and do not add a model or embeddings to detection.
+
 **17. Decks are derived, never stored (AD-26).** `lectureDecks`/`courseDeck`/
 `browseCards` in `lib/engine/decks.ts` read Course → Lecture → Concept every
 call. Do not add a deck table, deck membership, or a second tagging system:
@@ -276,7 +289,7 @@ above that interface knows where state lives.
 npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
 ```
 
-547 unit tests, 158 E2E tests (79 per project, iPad and desktop viewports). Mixed-version tests need the base commit 482824c in local git history (a normal clone has it). The E2E suite
+564 unit tests, 162 E2E tests (81 per project, iPad and desktop viewports). Mixed-version tests need the base commit 482824c in local git history (a normal clone has it). The E2E suite
 drives the real UI through the complete demo journey, including the deliberate
 ATP-depletion failure.
 

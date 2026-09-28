@@ -56,6 +56,16 @@ export function wordOverlap(a: Set<string>, b: Set<string>): number {
 /** Summaries this similar are suggested as duplicates. */
 export const SUMMARY_DUPLICATE_THRESHOLD = 0.6;
 
+/**
+ * Summary matching needs at least this many content words on BOTH sides.
+ * "cells" against "cells" has a Jaccard overlap of 1.0 and says nothing
+ * about the concepts; a one- or two-word summary is a label, not a claim.
+ * Three is the smallest count at which the threshold means something: a
+ * three-word summary must then be contained in the other one entirely.
+ * Title equality is not subject to this minimum.
+ */
+export const MIN_SUMMARY_CONTENT_WORDS = 3;
+
 const STATUS_RANK = { ACTIVE: 0, DRAFT: 1, DISCARDED: 2 } as const;
 
 /**
@@ -98,8 +108,12 @@ export function findDuplicateCandidates(curriculum: Curriculum): DuplicateSugges
         reason = "title";
         similarity = 1;
       } else {
-        similarity = wordOverlap(words.get(a.id)!, words.get(b.id)!);
-        if (similarity >= SUMMARY_DUPLICATE_THRESHOLD) reason = "summary";
+        const wa = words.get(a.id)!;
+        const wb = words.get(b.id)!;
+        if (wa.size >= MIN_SUMMARY_CONTENT_WORDS && wb.size >= MIN_SUMMARY_CONTENT_WORDS) {
+          similarity = wordOverlap(wa, wb);
+          if (similarity >= SUMMARY_DUPLICATE_THRESHOLD) reason = "summary";
+        }
       }
       if (!reason) continue;
       const [canonical, duplicate] = preferCanonical(curriculum, a, b);

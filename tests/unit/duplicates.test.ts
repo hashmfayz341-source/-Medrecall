@@ -3,7 +3,6 @@ import { pathologyCurriculum as C } from "@/lib/content/pathology";
 import {
   MergeError,
   addIngestedDocument,
-  applyOverrides,
   createOverrides,
   keepApart,
   mergeConcepts,
@@ -11,21 +10,21 @@ import {
   resolveMergeTarget,
   setConceptStatus,
   unmergeConcept,
-  type CurriculumOverrides,
 } from "@/lib/domain/curriculum";
 import {
+  MIN_SUMMARY_CONTENT_WORDS,
   SUMMARY_DUPLICATE_THRESHOLD,
   contentWords,
   findDuplicateCandidates,
   preferCanonical,
   wordOverlap,
 } from "@/lib/domain/duplicates";
-import type { Concept, Curriculum, SourceDocument, TeachingChunk } from "@/lib/domain/types";
 import { lectureDecks } from "@/lib/engine/decks";
 import { studyCardsForLecture } from "@/lib/engine/study";
 import { createLearnerState, getNextStep, markChunkTaught, recordAttempt } from "@/lib/engine/tutor";
 import { driveLecture } from "./driver";
 import { ANSWERS } from "./helpers";
+import { CHUNK, DOC, DOC2, DUP, HYPOXIA, L1, L2, OTHER, T0, candidate, chunk, document, dup, live, other, withTwoUploads, withUpload } from "./duplicate-fixture";
 
 /**
  * Duplicate candidates across documents: detection is deterministic and
@@ -33,66 +32,6 @@ import { ANSWERS } from "./helpers";
  * overrides. A merged duplicate is DISCARDED, its pages teach the canonical
  * concept, and its source becomes extra provenance on the canonical.
  */
-
-const L1 = "lecture-cell-injury";
-const L2 = "lecture-inflammation";
-const DOC = `doc-lecture-inflammation-${"b".repeat(64)}`;
-const DUP = `${DOC}-p1-c0`;
-const OTHER = `${DOC}-p1-c1`;
-const CHUNK = `${DOC}-chunk-1`;
-const HYPOXIA = "c-hypoxia";
-const T0 = new Date("2026-06-01T09:00:00.000Z");
-
-const document: SourceDocument = {
-  id: DOC,
-  lectureId: L2,
-  title: "Inflammation handout",
-  pages: [
-    {
-      number: 1,
-      title: "Recap",
-      text: "Hypoxia is the most common cause of cell injury. Neutrophils are the first cells to arrive in acute inflammation.",
-    },
-  ],
-};
-
-function candidate(id: string, title: string, summary: string, excerpt: string): Concept {
-  return {
-    id,
-    courseId: "course-pathology",
-    lectureId: L2,
-    title,
-    summary,
-    importance: "CORE",
-    status: "DRAFT",
-    prerequisiteIds: [],
-    source: { courseId: "course-pathology", lectureId: L2, documentId: DOC, pageNumber: 1, excerpt },
-    retrievalItems: [
-      { id: `${id}-r1`, conceptId: id, kind: "CLOZE", prompt: `___ ${summary}`, requiredKeywords: [[title.toLowerCase()]], acceptableAnswers: [title], explanation: summary },
-      { id: `${id}-r2`, conceptId: id, kind: "BASIC", prompt: `What does the handout state about ${title}?`, requiredKeywords: [[title.toLowerCase()]], acceptableAnswers: [], explanation: summary },
-    ],
-  };
-}
-
-const hypoxiaTitle = C.concepts.find((c) => c.id === HYPOXIA)!.title;
-const dup = candidate(DUP, hypoxiaTitle, "Hypoxia is the most common cause of cell injury.", "Hypoxia is the most common cause of cell injury.");
-const other = candidate(OTHER, "Neutrophils", "Neutrophils are the first cells to arrive in acute inflammation.", "Neutrophils are the first cells to arrive in acute inflammation.");
-const chunk: TeachingChunk = {
-  id: CHUNK,
-  lectureId: L2,
-  order: 10,
-  title: "Recap",
-  documentId: DOC,
-  pageNumbers: [1],
-  conceptIds: [DUP, OTHER],
-  explanation: "generated",
-  generated: true,
-};
-
-function withUpload(): CurriculumOverrides {
-  return addIngestedDocument(createOverrides(), { lectureId: L2, document, chunks: [chunk], ingestedAt: T0.toISOString() }, [dup, other]);
-}
-const live = (o: CurriculumOverrides): Curriculum => applyOverrides(C, o);
 
 describe("detection", () => {
   it("suggests a candidate whose title equals a concept from another document, preferring the ACTIVE and earlier one as canonical", () => {
@@ -131,6 +70,39 @@ describe("detection", () => {
     expect(findDuplicateCandidates(a)).toEqual(findDuplicateCandidates(a));
     const [canonical, duplicate] = preferCanonical(a, a.concepts.find((c) => c.id === DUP)!, a.concepts.find((c) => c.id === HYPOXIA)!);
     expect([canonical.id, duplicate.id]).toEqual([HYPOXIA, DUP]);
+  });
+
+  it("summary matching needs substance: trivial or boilerplate summaries never suggest a duplicate (M2)", () => {
+    const pair = (aSummary: string, bSummary: string, titles: [string, string] = ["Cell adaptation", "Leukocyte extravasation"]) =>
+      findDuplicateCandidates(live(withTwoUploads(
+        [candidate(`${DOC}-p1-c0`, titles[0], aSummary, aSummary)],
+        [candidate(`${DOC2}-p1-c0`, titles[1], bSummary, bSummary, DOC2)],
+      )));
+    expect(contentWords("cells").size).toBeLessThan(MIN_SUMMARY_CONTENT_WORDS);
+    // Jaccard would be 1.0 for these, but a single word is not a concept.
+    expect(pair("cells", "cells")).toEqual([]);
+    expect(pair("Apoptosis", "Apoptosis")).toEqual([]);
+    expect(pair("Inflammation.", "inflammation")).toEqual([]);
+    // Very short boilerplate below the minimum: never suggested.
+    expect(pair("See notes above.", "See notes above.")).toEqual([]);
+    expect(pair("Key point summary", "Key point summary")).toEqual([]);
+    // Substantive summaries at exactly the threshold: suggested.
+    // 4 content words each, 3 shared: 3 / 5 = 0.6.
+    const at = pair("Hypoxia causes cellular injury.", "Hypoxia causes cellular damage.");
+    expect(at).toHaveLength(1);
+    expect(at[0]).toMatchObject({ conceptId: `${DOC2}-p1-c0`, canonicalId: `${DOC}-p1-c0`, reason: "summary" });
+    expect(at[0]!.similarity).toBeCloseTo(SUMMARY_DUPLICATE_THRESHOLD);
+    // Substantive but below the threshold: not suggested.
+    expect(pair("Hypoxia causes cellular injury.", "Ischaemia causes hypoxic damage.")).toEqual([]);
+    expect(pair("Hypoxia causes cellular injury.", "Hypoxia causes cellular damage and death.")).toEqual([]); // 3 / 6
+    // An identical normalised title across documents is suggested whatever the summaries say.
+    expect(pair("cells", "tissue", ["Karyolysis", "karyolysis"])).toMatchObject([{ reason: "title", similarity: 1 }]);
+    // The same document is still never paired, however similar.
+    const same = findDuplicateCandidates(live(withUpload([
+      candidate(`${DOC}-p1-c0`, "Cell adaptation", "Hypoxia causes cellular injury.", "x"),
+      candidate(`${DOC}-p1-c1`, "Leukocyte extravasation", "Hypoxia causes cellular injury.", "y"),
+    ])));
+    expect(same).toEqual([]);
   });
 });
 
@@ -197,8 +169,9 @@ describe("merging", () => {
   it("stored merges and rejections are validated and migrated", () => {
     expect(migrateOverrides({ version: 4, statusById: {}, merges: { a: "b" }, keptApart: { c: "d" } })).toMatchObject({ merges: { a: "b" }, keptApart: { c: "d" } });
     expect(migrateOverrides({ version: 4, statusById: {} })).toMatchObject({ merges: {}, keptApart: {} });
-    expect(migrateOverrides({ version: 4, statusById: {}, merges: { a: 1 } })).toBeNull();
-    expect(migrateOverrides({ version: 4, statusById: {}, keptApart: [] })).toBeNull();
+    // A malformed entry is dropped on its own; the store still loads (M1).
+    expect(migrateOverrides({ version: 4, statusById: {}, merges: { a: 1, b: "c" } })).toMatchObject({ merges: { b: "c" } });
+    expect(migrateOverrides({ version: 4, statusById: {}, keptApart: [] })).toMatchObject({ keptApart: {} });
   });
 });
 
