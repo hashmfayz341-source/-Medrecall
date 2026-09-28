@@ -39,9 +39,21 @@ A complete tutor running with no AI key.
       unlock a lecture
 - [x] 147 unit tests, 28 Playwright tests at iPad and desktop viewports
 
+### Milestone 2 follow-through — duplicate candidates (implemented, awaiting review)
+
+- [x] Deterministic, textual detection of duplicate candidates across
+      documents (same title, or most summary words in common); suggestions
+      only, shown in Review drafts
+- [x] **Merge into it**: the duplicate is DISCARDED, its page teaches the
+      canonical concept, and its source is kept on the canonical as extra
+      provenance ("Also in …"); the canonical's status is never changed
+- [x] **Keep both** rejects a suggestion; **Undo merge** returns the
+      duplicate to DRAFT, never to ACTIVE
+- [x] Learner progress and Study cards of a merged duplicate are simply out
+      of use (DISCARDED); nothing is deleted or moved
+
 ### Not done in Milestone 2
 
-- Merging duplicate candidates across documents
 - Editing the prerequisite graph by hand
 - "View Source" showing the rendered page image (excerpt only for now)
 - OCR for scanned PDFs — rejected with an explicit message instead

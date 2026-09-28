@@ -694,6 +694,41 @@ share concept mastery but not scheduling state (see AD-25). Study is not gated
 by the tutor's lecture-order lock: Anki has no such lock, and only approved
 content is studyable either way.
 
+## AD-27 — Duplicate candidates across documents: suggested, merged by a reviewer
+
+**Decision.** Extraction de-duplicates by title within one document only;
+across documents the same idea arrives twice. Detection
+(`lib/domain/duplicates.ts`) is deterministic and purely textual — equal
+normalised titles, or summary content words with Jaccard overlap ≥ 0.6 —
+and only ever a suggestion. Merging is a reviewer's explicit decision
+recorded in the curriculum overrides (`merges`: duplicate → canonical;
+`keptApart`: rejected suggestions), like approval and edits (AD-16).
+
+- **The duplicate is DISCARDED** (`mergedInto` set on the composed concept);
+  no stored status can resurrect it while the merge exists. It therefore
+  never enters teaching, retrieval, Study, mastery, scheduling, Today or
+  interleaving on its own — the approval gate is unchanged.
+- **The canonical's status is never changed** by a merge; approving stays a
+  separate decision. It gains the duplicate's `SourceRef` as
+  `additionalSources` ("Also in …"); its own `source` stays the reviewed one.
+- **Teaching chunks that named the duplicate name the canonical** instead,
+  de-duplicated, so the duplicate's page is still teaching material for the
+  idea: a generated chunk's TEACH excerpts now come from any of the
+  concept's sources on that chunk's document and page (own source or an
+  additional one). If the canonical was already retrieved by the Tutor and is
+  not pending remediation, the chunk completes once taught — the idea was
+  tested already. Lecture completion and unlocking rules are unchanged.
+- **Study:** the canonical's cards stay in its own lecture's deck, once; the
+  duplicate has none.
+- **Learner state is not touched.** Progress and card records under the
+  duplicate's id remain stored and unused; undoing the merge (which returns
+  the duplicate to DRAFT, never ACTIVE) brings nothing back automatically.
+- **Chains and cycles:** merge targets resolve through chains; a merge that
+  would form a cycle is refused, and a dangling or cyclic stored merge is
+  ignored rather than trusted.
+- Detection ignores DISCARDED and merged concepts and never pairs two
+  concepts of the same document.
+
 ## AD-26 — Decks, browser, suspend/bury, custom study: derived over Concepts
 
 **Decision.** Step 2 adds deck and browser views, per-card Study flags, card

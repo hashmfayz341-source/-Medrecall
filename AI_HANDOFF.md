@@ -148,6 +148,13 @@ mastery).
 - **Mixed-version tests run main's real code from git** (`tests/base-main`),
   not an imitation of it.
 
+**18. Duplicate merges are reviewer decisions in the overrides (AD-27).**
+Detection (`findDuplicateCandidates`) is textual and deterministic — never
+call a model for it, and never auto-merge. `mergeConcepts` discards the
+duplicate and rewrites its chunks to the canonical; it must never change the
+canonical's status. Undo returns to DRAFT. Do not delete learner records of a
+merged concept.
+
 **17. Decks are derived, never stored (AD-26).** `lectureDecks`/`courseDeck`/
 `browseCards` in `lib/engine/decks.ts` read Course → Lecture → Concept every
 call. Do not add a deck table, deck membership, or a second tagging system:
@@ -269,7 +276,7 @@ above that interface knows where state lives.
 npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
 ```
 
-533 unit tests, 154 E2E tests (77 per project, iPad and desktop viewports). Mixed-version tests need the base commit 482824c in local git history (a normal clone has it). The E2E suite
+547 unit tests, 158 E2E tests (79 per project, iPad and desktop viewports). Mixed-version tests need the base commit 482824c in local git history (a normal clone has it). The E2E suite
 drives the real UI through the complete demo journey, including the deliberate
 ATP-depletion failure.
 
