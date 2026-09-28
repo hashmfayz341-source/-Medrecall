@@ -61,6 +61,31 @@ export interface SourceDocument {
   pages: Page[];
 }
 
+/** A region of a page, as fractions of its width and height, origin top-left. */
+export interface PageRegion {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * A card's visual: ORIGINAL material from the uploaded PDF, never generated.
+ * Points at a page (or a figure region cropped from it) of the source
+ * document, stored as an image asset in the browser (`assetStore`). The
+ * provenance is explicit so View source can show the slide it came from.
+ */
+export interface CardImage {
+  /** Asset id: `${documentId}#p${page}` for a whole page, `…#f${n}` for a figure. */
+  assetId: string;
+  documentId: string;
+  pageNumber: number;
+  /** The figure's region within the page; absent when the whole page is the visual. */
+  region?: PageRegion;
+  /** Shown with the question (an "identify what is shown" card) or with the answer. */
+  placement: "front" | "back";
+}
+
 export interface RetrievalItem {
   id: string;
   conceptId: string;
@@ -71,6 +96,16 @@ export interface RetrievalItem {
   /** Any one of these alone is a full-credit answer (exact-ish match path). */
   acceptableAnswers: string[];
   explanation: string;
+  /** Optional visual from the source document (Study cards only). */
+  image?: CardImage;
+}
+
+/** The language flashcards are generated in. Medical terminology stays English in `ar-en`. */
+export type CardLanguage = "en" | "ar" | "ar-en";
+
+/** Per-lecture generation preferences, persisted with the curriculum. */
+export interface LectureSettings {
+  language: CardLanguage;
 }
 
 export interface Concept {

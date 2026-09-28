@@ -112,12 +112,8 @@ export function documentIdFor(
   return `doc-${slugify(fileName)}-${identity}`;
 }
 
-/** Turn a file name into a readable document title. */
-export function titleFromFileName(fileName: string): string {
-  const base = fileName.replace(/\.pdf$/i, "").replace(/[_-]+/g, " ").trim();
-  if (!base) return "Untitled document";
-  return base.charAt(0).toUpperCase() + base.slice(1);
-}
+import { titleFromFileName } from "@/lib/domain/titles";
+export { titleFromFileName };
 
 interface TextItemLike {
   str?: string;

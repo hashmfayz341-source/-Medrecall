@@ -16,6 +16,8 @@ const config = [
       "test-results/**",
       "next-env.d.ts",
       ".base-main-482824c*/**",
+      // pdfjs worker copied by scripts/copy-pdf-worker.mjs
+      "public/pdf.worker.min.mjs",
     ],
   },
 ];

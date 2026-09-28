@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "node scripts/copy-pdf-worker.mjs",
     "dev": "next dev",
+    "prebuild": "node scripts/copy-pdf-worker.mjs",
     "build": "next build && node scripts/verify-pdf-trace.mjs",
     "start": "next start",
     "lint": "eslint .",
@@ -14,7 +16,8 @@
     "e2e": "playwright test",
     "e2e:install": "playwright install --with-deps chromium",
     "verify": "npm run lint && npm run typecheck && npm run test && npm run build",
-    "verify:trace": "node scripts/verify-pdf-trace.mjs"
+    "verify:trace": "node scripts/verify-pdf-trace.mjs",
+    "postinstall": "node scripts/copy-pdf-worker.mjs"
   },
   "dependencies": {
     "next": "16.3.5",

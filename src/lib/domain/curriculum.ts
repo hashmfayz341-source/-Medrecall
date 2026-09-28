@@ -1,13 +1,18 @@
 import type {
+  CardImage,
+  CardLanguage,
   SourceRef,
   Concept,
   ConceptStatus,
   Curriculum,
   Lecture,
+  LectureSettings,
+  RetrievalItem,
   SourceDocument,
   TeachingChunk,
 } from "./types";
 import { buildRetrievalItems } from "./retrieval";
+import type { PageVisuals } from "@/lib/visuals/analyze";
 
 /**
  * Shared curriculum state.
@@ -50,6 +55,13 @@ export interface IngestedDocument {
   document: SourceDocument;
   chunks: TeachingChunk[];
   ingestedAt: string;
+  /**
+   * Figures found in the document's pages (regions only; the images live in
+   * the browser asset store), so "Generate more" can make visual cards
+   * without re-reading the PDF. Optional: documents ingested before this
+   * existed have none.
+   */
+  visuals?: PageVisuals[];
 }
 
 export interface CurriculumOverrides {
@@ -72,8 +84,17 @@ export interface CurriculumOverrides {
   lectures: Lecture[];
   /** Uploaded documents and the chunks built from them. */
   ingested: IngestedDocument[];
-  /** Candidate concepts produced by ingestion. */
+  /** Candidate concepts produced by ingestion or card generation. */
   concepts: Concept[];
+  /** Card-generation preferences per lecture (language), keyed by lecture id. */
+  lectureSettings: Record<string, LectureSettings>;
+}
+
+export const CARD_LANGUAGES: readonly CardLanguage[] = ["en", "ar", "ar-en"];
+export const DEFAULT_CARD_LANGUAGE: CardLanguage = "en";
+
+export function isCardLanguage(value: unknown): value is CardLanguage {
+  return typeof value === "string" && (CARD_LANGUAGES as readonly string[]).includes(value);
 }
 
 export function createOverrides(): CurriculumOverrides {
@@ -87,6 +108,7 @@ export function createOverrides(): CurriculumOverrides {
     lectures: [],
     ingested: [],
     concepts: [],
+    lectureSettings: {},
   };
 }
 
@@ -110,6 +132,22 @@ function lectureShape(value: unknown): boolean {
 }
 function sourceShape(value: unknown): value is SourceRef {
   return record(value) && textFields(value, ["courseId", "lectureId", "documentId", "excerpt"]) && Number.isInteger(value.pageNumber) && Number(value.pageNumber) >= 1;
+}
+const fraction = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
+function regionShape(r: unknown): boolean {
+  return record(r) && fraction(r.x) && fraction(r.y) && fraction(r.w) && fraction(r.h) && Number(r.w) > 0 && Number(r.h) > 0;
+}
+function visualsShape(value: unknown): value is PageVisuals[] {
+  return Array.isArray(value) && value.every((v) => record(v) && Number.isInteger(v.pageNumber) && Number(v.pageNumber) >= 1 &&
+    Array.isArray(v.figures) && v.figures.every((f) => record(f) && (f.kind === "raster" || f.kind === "diagram" || f.kind === "page") && regionShape(f.region)) &&
+    (v.textChars === undefined || typeof v.textChars === "number"));
+}
+/** A card image is provenance: a document, a page, optionally a region, and where it is shown. */
+export function cardImageShape(value: unknown): value is CardImage {
+  if (!record(value) || !textFields(value, ["assetId", "documentId"]) || !Number.isInteger(value.pageNumber) || Number(value.pageNumber) < 1) return false;
+  if (value.placement !== "front" && value.placement !== "back") return false;
+  if (value.region === undefined) return true;
+  return regionShape(value.region);
 }
 function conceptShape(value: unknown): boolean {
   if (!record(value) || !textFields(value, ["id", "courseId", "lectureId", "title", "summary"]) || !status(value.status) || !strings(value.prerequisiteIds)) return false;
@@ -142,13 +180,41 @@ function sanitizeIdMap(value: unknown, label: string, dropped: string[]): Record
   return kept;
 }
 
+/** A malformed card image is dropped from its item; the card itself stays. */
+function sanitizeItemImage(item: RetrievalItem, label: string, dropped: string[]): RetrievalItem {
+  const { image, ...rest } = item as RetrievalItem & { image?: unknown };
+  if (image === undefined) return item;
+  if (cardImageShape(image)) return item;
+  dropped.push(`${label}.image`);
+  return rest;
+}
+
+/** Per-lecture settings, one entry at a time; an unknown language is dropped, never guessed. */
+function sanitizeLectureSettings(value: unknown, dropped: string[]): Record<string, LectureSettings> {
+  if (value === undefined) return {};
+  if (!record(value)) {
+    dropped.push("lectureSettings");
+    return {};
+  }
+  const kept: Record<string, LectureSettings> = {};
+  for (const [lectureId, settings] of Object.entries(value)) {
+    if (lectureId.length > 0 && record(settings) && isCardLanguage(settings.language)) kept[lectureId] = { language: settings.language };
+    else dropped.push(`lectureSettings.${lectureId}`);
+  }
+  return kept;
+}
+
 /**
  * Derived fields on a stored concept are never trusted. `mergedInto` comes
  * from `merges` alone and is stripped; `additionalSources` keeps only its
  * well-formed entries, so a malformed one can never reach the Tutor's TEACH
  * step or a Study card. Status is left exactly as stored.
  */
-function sanitizeStoredConcept(concept: Concept, index: number, dropped: string[]): Concept {
+function sanitizeStoredConcept(stored: Concept, index: number, dropped: string[]): Concept {
+  const concept: Concept = {
+    ...stored,
+    retrievalItems: stored.retrievalItems.map((item, i) => sanitizeItemImage(item, `concepts[${index}].retrievalItems[${i}]`, dropped)),
+  };
   const { mergedInto, additionalSources, ...rest } = concept as Concept & { mergedInto?: unknown; additionalSources?: unknown };
   if (mergedInto !== undefined) dropped.push(`concepts[${index}].mergedInto`);
   if (additionalSources === undefined) return rest;
@@ -195,6 +261,7 @@ export function sanitizeOverrides(stored: unknown): { overrides: CurriculumOverr
   const dropped: string[] = [];
   const merges = sanitizeIdMap(value.merges, "merges", dropped);
   const keptApart = sanitizeIdMap(value.keptApart, "keptApart", dropped);
+  const lectureSettings = sanitizeLectureSettings(value.lectureSettings, dropped);
   if (value.lectures !== undefined && (!Array.isArray(value.lectures) || !value.lectures.every(lectureShape))) return null;
   if (value.concepts !== undefined && (!Array.isArray(value.concepts) || !value.concepts.every(conceptShape))) return null;
   if (value.ingested !== undefined && (!Array.isArray(value.ingested) || !value.ingested.every((entry) => record(entry) &&
@@ -208,8 +275,17 @@ export function sanitizeOverrides(stored: unknown): { overrides: CurriculumOverr
     merges,
     keptApart,
     lectures: value.lectures ?? [],
-    ingested: value.ingested ?? [],
+    ingested: (value.ingested ?? []).map((entry, index) => {
+      // Malformed figure metadata loses only itself: the document, its
+      // chunks and its cards stay.
+      if (entry.visuals === undefined || visualsShape(entry.visuals)) return entry;
+      dropped.push(`ingested[${index}].visuals`);
+      const { visuals: _v, ...rest } = entry;
+      void _v;
+      return rest;
+    }),
     concepts: (value.concepts ?? []).map((concept, index) => sanitizeStoredConcept(concept, index, dropped)),
+    lectureSettings,
   };
   // An old same-name upload could replace a document's text while keeping the
   // previous reviewer's decisions, because both took the same colliding id.
@@ -530,7 +606,53 @@ export function addLecture(
   overrides: CurriculumOverrides,
   lecture: Lecture,
 ): CurriculumOverrides {
+  if (overrides.lectures.some((l) => l.id === lecture.id)) return overrides;
   return { ...overrides, lectures: [...overrides.lectures, lecture] };
+}
+
+/** Rename a lecture the user created. Authored lectures are not stored here and are left alone. */
+export function renameLecture(overrides: CurriculumOverrides, lectureId: string, title: string): CurriculumOverrides {
+  const trimmed = title.trim();
+  if (!trimmed || !overrides.lectures.some((l) => l.id === lectureId)) return overrides;
+  return { ...overrides, lectures: overrides.lectures.map((l) => (l.id === lectureId ? { ...l, title: trimmed } : l)) };
+}
+
+/** The card language for a lecture, defaulting to English. */
+export function lectureLanguage(overrides: CurriculumOverrides, lectureId: string): CardLanguage {
+  return overrides.lectureSettings[lectureId]?.language ?? DEFAULT_CARD_LANGUAGE;
+}
+
+export function setLectureLanguage(overrides: CurriculumOverrides, lectureId: string, language: CardLanguage): CurriculumOverrides {
+  if (!isCardLanguage(language)) return overrides;
+  return { ...overrides, lectureSettings: { ...overrides.lectureSettings, [lectureId]: { ...overrides.lectureSettings[lectureId], language } } };
+}
+
+/**
+ * Append generated cards (as DRAFT concepts) to a document already stored.
+ * Existing concepts, their decisions and their cards' FSRS history are left
+ * untouched: a concept whose id is already present is skipped, and the new
+ * ones are added to the teaching chunk that covers their page so the Tutor
+ * can teach them once approved.
+ */
+export function addGeneratedConcepts(
+  overrides: CurriculumOverrides,
+  documentId: string,
+  concepts: readonly Concept[],
+): CurriculumOverrides {
+  const existing = new Set(overrides.concepts.map((c) => c.id));
+  const fresh = concepts.filter((c) => c.source.documentId === documentId && !existing.has(c.id));
+  if (fresh.length === 0) return overrides;
+  const ingested = overrides.ingested.map((entry) => {
+    if (entry.document.id !== documentId) return entry;
+    const chunks = entry.chunks.map((chunk) => ({ ...chunk, conceptIds: [...chunk.conceptIds] }));
+    for (const concept of fresh) {
+      const target =
+        chunks.find((chunk) => chunk.pageNumbers.includes(concept.source.pageNumber)) ?? chunks[chunks.length - 1];
+      if (target && !target.conceptIds.includes(concept.id)) target.conceptIds.push(concept.id);
+    }
+    return { ...entry, chunks };
+  });
+  return { ...overrides, ingested, concepts: [...overrides.concepts, ...fresh] };
 }
 
 /** Store an ingested document, its chunks and its candidate concepts. */

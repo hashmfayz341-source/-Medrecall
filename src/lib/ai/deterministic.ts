@@ -1,4 +1,5 @@
 import { gradeAnswer, type GradeResult } from "@/lib/grading";
+import { generateCards, type GenerateCardsInput, type GeneratedCards } from "@/lib/generation/generate";
 import { generateCandidates } from "@/lib/ingestion/extractor";
 import { assertActive, assertAllActive } from "@/lib/domain/gate";
 import type { Concept, RetrievalItem } from "@/lib/domain/types";
@@ -40,6 +41,15 @@ export class DeterministicProvider implements AiProvider {
       },
       { courseId: input.courseId, lectureId: input.lectureId },
     );
+  }
+
+  /**
+   * Lecture pages → flashcards, deterministically: grounded facts, scored,
+   * de-duplicated, phrased in the requested language's scaffolding. Never
+   * more cards than the lecture supports.
+   */
+  async generateCards(input: GenerateCardsInput): Promise<GeneratedCards> {
+    return generateCards(input);
   }
 
   async generateTeachingExplanation(input: TeachingInput): Promise<string> {

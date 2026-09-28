@@ -1,5 +1,6 @@
 export type {
   AiProvider,
+  CardGenerationProvider,
   ExtractionProvider,
   GradeFreeAnswerInput,
   GradingProvider,
@@ -26,3 +27,4 @@ export {
  */
 export { getGradingProvider } from "./gradingProvider";
 export { getExtractionProvider } from "./extractionProvider";
+export { getGenerationProvider } from "./generationProvider";

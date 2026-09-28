@@ -4,6 +4,7 @@ import type {
   SourceDocument,
   TeachingChunk,
 } from "@/lib/domain/types";
+import type { GenerateCardsInput, GeneratedCards } from "@/lib/generation/generate";
 import type { GradeResult } from "@/lib/grading";
 import type { GradingConcept } from "@/lib/grading/request";
 
@@ -83,11 +84,30 @@ export interface ExtractionProvider extends ProviderIdentity {
 }
 
 /**
- * The full surface the deterministic provider implements. Roles are resolved
- * SEPARATELY (see ./gradingProvider.ts and ./extractionProvider.ts): a hosted
- * grader need not, and must not, become the extractor by implementing this.
+ * The CARD GENERATION role, resolved only by `getGenerationProvider()` and
+ * used only by POST /api/generate: lecture pages (and the figures found in
+ * them) → flashcards, in the requested language and number.
+ *
+ * Implementations MUST return DRAFT concepts, one card each, every one with
+ * a populated SourceRef (document and page) and, for a visual card, a
+ * `CardImage` that points at an ORIGINAL page or figure of that document —
+ * never a synthesised picture. They must not pad to the requested count:
+ * fewer cards with a `shortfall` is the correct answer when the lecture does
+ * not support more. A hosted implementation may translate and rephrase
+ * (this is where `ar` becomes fully Arabic), but the explanation must stay
+ * grounded in the cited page.
  */
-export interface AiProvider extends GradingProvider, ExtractionProvider {
+export interface CardGenerationProvider extends ProviderIdentity {
+  generateCards(input: GenerateCardsInput): Promise<GeneratedCards>;
+}
+
+/**
+ * The full surface the deterministic provider implements. Roles are resolved
+ * SEPARATELY (see ./gradingProvider.ts, ./extractionProvider.ts and
+ * ./generationProvider.ts): a hosted grader need not, and must not, become
+ * the extractor or the card generator by implementing this.
+ */
+export interface AiProvider extends GradingProvider, ExtractionProvider, CardGenerationProvider {
   generateTeachingExplanation(input: TeachingInput): Promise<string>;
   generateRetrievalItems(concept: Concept): Promise<RetrievalItem[]>;
 }
