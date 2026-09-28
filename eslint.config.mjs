@@ -15,6 +15,7 @@ const config = [
       "playwright-report/**",
       "test-results/**",
       "next-env.d.ts",
+      ".base-main-482824c*/**",
     ],
   },
 ];

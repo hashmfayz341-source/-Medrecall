@@ -167,8 +167,50 @@ export interface ConceptProgress {
    * shown the explanation. Explicitly does NOT clear WEAK.
    */
   immediateRemediationPassed: boolean;
+  /**
+   * True while a failure the TUTOR must immediately re-teach is outstanding.
+   *
+   * Explicit state, deliberately NOT derived from `mastery === "WEAK"`:
+   * mastery is shared with Card Study, so a concept can be WEAK because of a
+   * Study failure the Tutor has nothing to remediate. Set by a Tutor failure,
+   * or by a Study AGAIN once the Tutor has retrieved the concept; cleared by a
+   * correct Tutor remediation or by the concept leaving WEAK. Learner state
+   * saved before this field existed is migrated on load (see
+   * `inferLegacyPendingTutorRemediation`).
+   */
+  pendingTutorRemediation: boolean;
+  /**
+   * `tutorScheduleRevision(schedule)` at the moment `pendingTutorRemediation`
+   * was last decided. Only this build writes it; main keeps it as stored even
+   * when its own Tutor attempt changes the schedule. On load, a stored flag is
+   * trusted only while this still matches the concept's Tutor schedule.
+   */
+  pendingTutorRemediationRevision: string;
   lastAttemptAt: string | null;
   schedule: ScheduleState;
+}
+
+/**
+ * An Anki-style self-rating, chosen by the learner after seeing the answer.
+ * Maps one-to-one onto FSRS ratings — Easy is never collapsed into Good.
+ */
+export type SelfRating = "AGAIN" | "HARD" | "GOOD" | "EASY";
+
+/**
+ * Per-learner record for one STUDY CARD — a RetrievalItem studied on its own.
+ *
+ * FSRS schedules each card individually, exactly as Anki schedules each card
+ * of a note. The Concept the card represents keeps its own ConceptProgress
+ * (mastery), which every card of that concept feeds.
+ */
+export interface CardProgress {
+  itemId: string;
+  conceptId: string;
+  schedule: ScheduleState;
+  /** Number of self-ratings recorded for this card. */
+  reviews: number;
+  lastRating: SelfRating | null;
+  lastReviewedAt: string | null;
 }
 
 /** Per-learner state. Everything the tutor knows about one student. */
@@ -183,4 +225,10 @@ export interface LearnerState {
   completedLectureIds: string[];
   /** Interleaved concept ids already injected, keyed by chunk id. */
   injectedByChunk: Record<string, string[]>;
+  /**
+   * Study-card progress keyed by RetrievalItem id. Optional so learner state
+   * saved before card study existed loads unchanged; absent means no card has
+   * been studied yet.
+   */
+  cards?: Record<string, CardProgress>;
 }

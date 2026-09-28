@@ -50,7 +50,8 @@ export function hasLegacyIdentities(overrides: CurriculumOverrides): boolean {
 }
 
 /**
- * Strip every learner record that hangs off an untrusted document identity.
+ * Strip every learner record that hangs off an untrusted document identity,
+ * including the FSRS schedules of study cards belonging to those concepts.
  *
  * Pure: returns a new LearnerState and reports what it removed so the caller
  * can tell the learner why their progress on that material is gone.
@@ -104,6 +105,21 @@ export function quarantineLegacyLearnerState(
     }
   }
 
+  // Study-card schedules for cards of untrusted concepts.
+  let removedCards = 0;
+  let cards: LearnerState["cards"];
+  if (learner.cards) {
+    cards = {};
+    for (const [itemId, record] of Object.entries(learner.cards)) {
+      if (conceptIds.has(record.conceptId)) {
+        removedCards++;
+        if (!removedConceptIds.includes(record.conceptId)) removedConceptIds.push(record.conceptId);
+      } else {
+        cards[itemId] = record;
+      }
+    }
+  }
+
   // Interleaving bookkeeping, both by chunk and by injected concept.
   const injectedByChunk: LearnerState["injectedByChunk"] = {};
   for (const [chunkId, injected] of Object.entries(learner.injectedByChunk)) {
@@ -142,11 +158,13 @@ export function quarantineLegacyLearnerState(
       completedChunkIds,
       completedLectureIds,
       injectedByChunk,
+      ...(cards ? { cards } : {}),
     },
     quarantinedConceptIds: removedConceptIds,
     quarantinedChunkIds: [...removedChunkIds],
     quarantinedLectureIds: removedLectureIds,
     changed:
+      removedCards > 0 ||
       removedConceptIds.length > 0 ||
       removedChunkIds.size > 0 ||
       removedLectureIds.length > 0,

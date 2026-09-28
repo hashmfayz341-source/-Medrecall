@@ -62,6 +62,8 @@ describe("lecture unlock rules", () => {
           ...learner.progress["c-atp-depletion"]!,
           mastery: "WEAK" as const,
           immediateRemediationPassed: false,
+          // A lapse is a Tutor failure: pending immediate remediation.
+          pendingTutorRemediation: true,
         },
       },
     };

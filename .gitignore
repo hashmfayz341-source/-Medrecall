@@ -41,3 +41,6 @@ next-env.d.ts
 
 # TypeScript incremental build cache
 *.tsbuildinfo
+
+# main@482824c source materialized from git for mixed-version tests
+/.base-main-482824c*/
