@@ -269,7 +269,7 @@ above that interface knows where state lives.
 npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
 ```
 
-531 unit tests, 154 E2E tests (77 per project, iPad and desktop viewports). Mixed-version tests need the base commit 482824c in local git history (a normal clone has it). The E2E suite
+533 unit tests, 154 E2E tests (77 per project, iPad and desktop viewports). Mixed-version tests need the base commit 482824c in local git history (a normal clone has it). The E2E suite
 drives the real UI through the complete demo journey, including the deliberate
 ATP-depletion failure.
 

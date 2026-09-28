@@ -430,15 +430,17 @@ export class LocalStorageLearnerRepository implements LearnerStateRepository {
         // cards of this learner: they are kept, and only what the state does
         // carry (flags, today's tally) is written over.
         const stored = cards === undefined ? sanitizeStudyCards(readJson(this.cardsKey)) : null;
-        const keptCards = stored && stored.generation === generation ? stored.cards : {};
+        const kept = stored && stored.generation === generation ? stored : null;
+        const flags = cardFlags ?? kept?.flags;
+        const day = studyDay ?? kept?.studyDay;
         window.localStorage.setItem(
           this.cardsKey,
           JSON.stringify({
             version: STUDY_CARDS_VERSION,
             [GENERATION]: generation,
-            cards: cards ?? keptCards,
-            ...(cardFlags ? { flags: cardFlags } : {}),
-            ...(studyDay ? { studyDay } : {}),
+            cards: cards ?? kept?.cards ?? {},
+            ...(flags ? { flags } : {}),
+            ...(day ? { studyDay: day } : {}),
           }),
         );
       } else if (sanitizeStudyCards(readJson(this.cardsKey))?.generation !== generation) {

@@ -60,7 +60,11 @@ export function lectureDecks(
     });
 }
 
-/** The whole course as one deck (sums of the lecture decks). */
+/**
+ * The whole course as one deck. Learning, suspended and buried counts are the
+ * sums of the lecture decks; new and review are the course-wide queue's, so
+ * the daily limits (which are per learner, not per deck) apply once.
+ */
 export function courseDeck(
   curriculum: Curriculum,
   learner: LearnerState,
@@ -68,15 +72,8 @@ export function courseDeck(
   limits?: StudyLimits,
 ): CourseDeck {
   const lectures = lectureDecks(curriculum, learner, now, limits);
-  const counts: StudyCounts = { new: 0, learning: 0, review: 0, suspended: 0, buried: 0 };
-  for (const deck of lectures) {
-    counts.new += deck.counts.new;
-    counts.learning += deck.counts.learning;
-    counts.review += deck.counts.review;
-    counts.suspended += deck.counts.suspended;
-    counts.buried += deck.counts.buried;
-  }
-  return { total: lectures.reduce((n, d) => n + d.total, 0), counts, lectures };
+  const course = buildStudyQueueFor(curriculum, learner, studyCardsForCourse(curriculum), now, { limits });
+  return { total: lectures.reduce((n, d) => n + d.total, 0), counts: course.counts, lectures };
 }
 
 /* ------------------------------------------------------------------ */

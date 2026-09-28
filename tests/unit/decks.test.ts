@@ -182,6 +182,37 @@ describe("suspend and bury", () => {
     expect(buildStudyQueue(C, learner, L1, nextDay).counts).toMatchObject({ suspended: 1, buried: 0 });
   });
 
+  it("a state that carries no cards keeps the stored cards, flags and tally it does not mention", () => {
+    const store = new Map<string, string>();
+    (globalThis as { window?: unknown }).window = {
+      localStorage: {
+        getItem: (k: string) => store.get(k) ?? null,
+        setItem: (k: string, v: string) => void store.set(k, v),
+        removeItem: (k: string) => void store.delete(k),
+      },
+    };
+    try {
+      let full = rate(createLearnerState(), "c-hypoxia-1", "GOOD", T0);
+      full = suspendCard(C, full, "c-hypoxia", "c-hypoxia-2");
+      const repo = new LocalStorageLearnerRepository();
+      expect(repo.save(full)).toBe(true);
+      // A partial state: concept progress only (no Study fields at all).
+      const { cards: _c, cardFlags: _f, studyDay: _d, ...partial } = full;
+      void _c; void _f; void _d;
+      expect(repo.save(partial as LearnerState)).toBe(true);
+      expect(repo.load()).toEqual(full);
+      // A partial state with only new flags keeps the stored cards and tally.
+      const flagsOnly = { ...partial, cardFlags: { "c-rev-1": { conceptId: "c-reversible-irreversible", suspended: true } } } as LearnerState;
+      expect(repo.save(flagsOnly)).toBe(true);
+      const back = repo.load()!;
+      expect(back.cards).toEqual(full.cards);
+      expect(back.studyDay).toEqual(full.studyDay);
+      expect(back.cardFlags).toEqual(flagsOnly.cardFlags);
+    } finally {
+      delete (globalThis as { window?: unknown }).window;
+    }
+  });
+
   it("a flag set before any card was rated is persisted (the sidecar is written for any Study state)", () => {
     const store = new Map<string, string>();
     (globalThis as { window?: unknown }).window = {
@@ -353,6 +384,15 @@ describe("daily limits", () => {
     const next = buildStudyQueue(C, learner, L1, new Date(later.getTime() + 1000), { limits: { newPerDay: 0, reviewsPerDay: 2 } });
     expect(next.counts.review).toBe(0);
     expect(next.heldByLimits.review).toBe(1);
+  });
+
+  it("the course deck applies the daily limits once, not once per lecture", () => {
+    const learner = createLearnerState();
+    const limits = { newPerDay: 3, reviewsPerDay: 200 };
+    const course = courseDeck(C, learner, T0, limits);
+    expect(course.lectures.every((d) => d.counts.new === 3)).toBe(true); // each session would show 3
+    expect(course.counts.new).toBe(3); // but the learner gets 3 today, not 3 per lecture
+    expect(courseDeck(C, learner, T0).counts.new).toBe(course.total); // no limits: everything
   });
 
   it("settings are validated: whole numbers within range, else the defaults are used", () => {

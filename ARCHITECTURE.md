@@ -706,7 +706,9 @@ system, and no second scheduling engine.
   concepts' cards, computed on every render. Approving, editing or discarding
   a concept changes the deck at once; DRAFT/DISCARDED cards are never in one.
   Counts come from `buildStudyQueueFor` over those cards — Card FSRS state
-  with the daily limits applied — never from concept mastery.
+  with the daily limits applied — never from concept mastery. The course
+  deck's new/review counts come from the course-wide queue, so the limits
+  (per learner, not per deck) apply once.
 - **The browser** (`browseCards`) lists cards with concept, lecture, source
   document and Study status (`NEW | LEARNING | REVIEW | SUSPENDED | BURIED`,
   plus a due-now filter). Filters use existing metadata: lecture, item kind,
@@ -746,6 +748,8 @@ system, and no second scheduling engine.
   (`{ version: 2, generation, cards, flags?, studyDay? }`), so a stale main
   tab cannot erase them and they are bound to the learner generation like
   cards. Malformed flags are dropped one by one; a malformed tally as a whole.
+  A save whose state carries no `cards` keeps the stored cards, and keeps
+  stored flags and tally the state does not mention.
 
 ## AD-25 — FSRS schedules each card; self-ratings feed concept mastery
 
