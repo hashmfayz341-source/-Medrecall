@@ -5,15 +5,16 @@ import Link from "next/link";
 import { useLearner } from "./LearnerProvider";
 import { ButtonLink } from "./ui";
 import {
-  buildStudyQueue,
+  buildStudyQueueFor,
   captureCardPrecondition,
   formatInterval,
   recordCardRating,
-  studyCardsForLecture,
   type CardRatingPrecondition,
   type StudyCard,
   type StudyQueueKind,
 } from "@/lib/engine/study";
+import { resolveStudySelection, type StudySelection } from "@/lib/engine/decks";
+import { useStudySettings } from "./useStudySettings";
 import { newSchedule, previewRatings } from "@/lib/engine/scheduler";
 import { StaleAttemptError } from "@/lib/domain/errors";
 import type { RetrievalKind, SelfRating } from "@/lib/domain/types";
@@ -48,8 +49,16 @@ const COUNT_TONE: Record<StudyQueueKind, string> = {
   REVIEW: "text-emerald-700",
 };
 
-export function StudySession({ lectureId }: { lectureId: string }) {
+export function StudySession({
+  selection,
+  ignoreLimits = false,
+}: {
+  selection: StudySelection;
+  /** Custom study may ignore the daily limits; scheduling is normal FSRS either way. */
+  ignoreLimits?: boolean;
+}) {
   const { curriculum, learner, setLearner, snapshot, syncFromStorage, ready } = useLearner();
+  const { limits } = useStudySettings();
   const [now, setNow] = useState(() => new Date());
   /** The card whose answer is showing. Pinned so a background update cannot swap it. */
   const [revealedId, setRevealedId] = useState<string | null>(null);
@@ -72,15 +81,22 @@ export function StudySession({ lectureId }: { lectureId: string }) {
     return () => clearInterval(timer);
   }, []);
 
-  const lecture = curriculum.course.lectures.find((l) => l.id === lectureId);
+  const resolved = useMemo(
+    () => resolveStudySelection(curriculum, learner, now, selection),
+    [curriculum, learner, now, selection],
+  );
+  const missingLecture = selection.kind === "lecture" && resolved.lecture === null;
 
   const study = useMemo(() => {
-    if (!ready || !lecture) return null;
+    if (!ready || missingLecture) return null;
     return {
-      total: studyCardsForLecture(curriculum, lectureId).length,
-      ...buildStudyQueue(curriculum, learner, lectureId, now),
+      total: resolved.cards.length,
+      ...buildStudyQueueFor(curriculum, learner, resolved.cards, now, {
+        limits: ignoreLimits ? undefined : limits,
+        dueOnly: resolved.dueOnly,
+      }),
     };
-  }, [ready, lecture, curriculum, learner, lectureId, now]);
+  }, [ready, missingLecture, resolved, curriculum, learner, now, limits, ignoreLimits]);
 
   const current: StudyCard | null =
     (study && (study.queue.find((c) => c.item.id === revealedId) ?? study.next)) || null;
@@ -178,7 +194,7 @@ export function StudySession({ lectureId }: { lectureId: string }) {
     );
   }
 
-  if (!lecture || !study) {
+  if (!study) {
     return (
       <Shell title="Study">
         <p className="text-ink-600">This lecture is not available in this browser.</p>
@@ -216,9 +232,20 @@ export function StudySession({ lectureId }: { lectureId: string }) {
     </div>
   );
 
+  const held = study.heldByLimits.new + study.heldByLimits.review;
+  const limitNote =
+    held > 0 ? (
+      <p data-testid="limit-note" className="mt-3 text-sm text-ink-500">
+        {study.heldByLimits.new > 0 && `${study.heldByLimits.new} new ${study.heldByLimits.new === 1 ? "card" : "cards"}`}
+        {study.heldByLimits.new > 0 && study.heldByLimits.review > 0 && " and "}
+        {study.heldByLimits.review > 0 && `${study.heldByLimits.review} ${study.heldByLimits.review === 1 ? "review" : "reviews"}`}
+        {" "}held back by today&apos;s limits.
+      </p>
+    ) : null;
+
   if (study.total === 0) {
     return (
-      <Shell title={lecture.title}>
+      <Shell title={resolved.title}>
         <div data-testid="study-empty" className="rounded-2xl border border-ink-200 bg-white p-8 text-center">
           <h1 className="text-2xl font-bold text-ink-800">No cards to study yet</h1>
           <p className="mt-3 text-ink-600">
@@ -239,15 +266,18 @@ export function StudySession({ lectureId }: { lectureId: string }) {
 
   if (!current) {
     return (
-      <Shell title={lecture.title}>
+      <Shell title={resolved.title}>
         {counts}
         <div data-testid="study-done" className="mt-6 rounded-2xl border border-ink-200 bg-white p-8 text-center">
-          <h1 className="text-2xl font-bold text-ink-800">Congratulations! You have finished this lecture for now.</h1>
+          <h1 className="text-2xl font-bold text-ink-800">
+            {selection.kind === "lecture" ? "Congratulations! You have finished this lecture for now." : "Nothing more to study in this selection for now."}
+          </h1>
           <p className="mt-3 text-ink-600">
             {study.nextDueAt
               ? `The next card is due in ${formatInterval(study.nextDueAt.getTime() - now.getTime())}.`
               : "There is nothing scheduled yet."}
           </p>
+          {limitNote}
           {notice && (
             <p data-testid="study-notice" className="mt-4 text-sm text-amber-800">
               {notice}
@@ -269,8 +299,9 @@ export function StudySession({ lectureId }: { lectureId: string }) {
     .find((d) => d.id === concept.source.documentId);
 
   return (
-    <Shell title={lecture.title}>
+    <Shell title={resolved.title}>
       {counts}
+      {limitNote}
 
       {notice && (
         <p

@@ -6,5 +6,5 @@ export default async function StudyPage({
   params: Promise<{ lectureId: string }>;
 }) {
   const { lectureId } = await params;
-  return <StudySession key={lectureId} lectureId={lectureId} />;
+  return <StudySession key={lectureId} selection={{ kind: "lecture", lectureId }} />;
 }
