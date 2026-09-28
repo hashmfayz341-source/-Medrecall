@@ -5,7 +5,13 @@ import {
   createLearnerState,
   inferLegacyPendingTutorRemediation,
 } from "@/lib/engine/tutor";
-import type { CardProgress, ConceptProgress, LearnerState } from "@/lib/domain/types";
+import type {
+  CardFlags,
+  CardProgress,
+  ConceptProgress,
+  LearnerState,
+  StudyDayLog,
+} from "@/lib/domain/types";
 import type { LearnerStateRepository } from "./repository";
 
 /**
@@ -180,21 +186,68 @@ function sanitizeCardRecords(
   return cards;
 }
 
+function isCardFlags(value: unknown): value is CardFlags {
+  if (!isRecord(value)) return false;
+  if (typeof value.conceptId !== "string" || value.conceptId.length === 0) return false;
+  if (value.suspended !== undefined && typeof value.suspended !== "boolean") return false;
+  if (value.buriedUntil !== undefined) {
+    if (typeof value.buriedUntil !== "string") return false;
+    if (Number.isNaN(new Date(value.buriedUntil).getTime())) return false;
+  }
+  return value.suspended === true || typeof value.buriedUntil === "string";
+}
+
+function isStudyDayLog(value: unknown): value is StudyDayLog {
+  return (
+    isRecord(value) &&
+    typeof value.day === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(value.day) &&
+    Number.isInteger(value.newIntroduced) &&
+    (value.newIntroduced as number) >= 0 &&
+    Number.isInteger(value.reviews) &&
+    (value.reviews as number) >= 0
+  );
+}
+
+export interface StudySidecar {
+  generation: string;
+  cards: Record<string, CardProgress>;
+  /** Absent when the sidecar predates flags, or has none. */
+  flags?: Record<string, CardFlags>;
+  studyDay?: StudyDayLog;
+  dropped: string[];
+}
+
 /**
  * Validate the Study-card sidecar. Returns null when it cannot be trusted as a
  * whole (not an object, unknown version, no generation, `cards` not an
  * object); otherwise the learner generation it is bound to and the valid card
- * records, with malformed ones dropped individually.
+ * records, with malformed ones dropped individually. Suspend/bury flags and
+ * today's Study tally travel in the same sidecar (Study-owned, never in the
+ * envelope); malformed flags are dropped one by one, a malformed tally as a
+ * whole (it only costs today's limit count).
  */
-export function sanitizeStudyCards(
-  value: unknown,
-): { generation: string; cards: Record<string, CardProgress>; dropped: string[] } | null {
+export function sanitizeStudyCards(value: unknown): StudySidecar | null {
   if (!isRecord(value)) return null;
   if (value.version !== STUDY_CARDS_VERSION) return null;
   if (typeof value[GENERATION] !== "string" || value[GENERATION].length === 0) return null;
   if (!isRecord(value.cards)) return null;
   const dropped: string[] = [];
-  return { generation: value[GENERATION], cards: sanitizeCardRecords(value.cards, dropped), dropped };
+  const result: StudySidecar = {
+    generation: value[GENERATION],
+    cards: sanitizeCardRecords(value.cards, dropped),
+    dropped,
+  };
+  if (isRecord(value.flags)) {
+    const flags: Record<string, CardFlags> = {};
+    for (const [itemId, record] of Object.entries(value.flags)) {
+      if (isCardFlags(record)) flags[itemId] = record;
+      else dropped.push(`flags:${itemId}`);
+    }
+    result.flags = flags;
+  }
+  if (isStudyDayLog(value.studyDay)) result.studyDay = value.studyDay;
+  return result;
 }
 
 /**
@@ -266,6 +319,18 @@ export function sanitizeLearnerState(
     if (!isRecord(value.cards)) return null;
     state.cards = sanitizeCardRecords(value.cards, dropped);
   }
+  // Likewise Study-owned flags and today's tally: never written to the
+  // envelope by this build, but read if present so a serialized LearnerState
+  // round-trips; the repository's sidecar takes precedence.
+  if (isRecord(value.cardFlags)) {
+    const cardFlags: Record<string, CardFlags> = {};
+    for (const [itemId, record] of Object.entries(value.cardFlags)) {
+      if (isCardFlags(record)) cardFlags[itemId] = record;
+      else dropped.push(`flags:${itemId}`);
+    }
+    state.cardFlags = cardFlags;
+  }
+  if (isStudyDayLog(value.studyDay)) state.studyDay = value.studyDay;
 
   return { state, dropped };
 }
@@ -340,6 +405,8 @@ export class LocalStorageLearnerRepository implements LearnerStateRepository {
       const sidecar = sanitizeStudyCards(readJson(this.cardsKey));
       if (sidecar && learnerGenerations(raw).has(sidecar.generation)) {
         state.cards = sidecar.cards;
+        if (sidecar.flags) state.cardFlags = sidecar.flags;
+        if (sidecar.studyDay) state.studyDay = sidecar.studyDay;
       }
       return state;
     } catch {
@@ -350,14 +417,31 @@ export class LocalStorageLearnerRepository implements LearnerStateRepository {
 
   save(state: LearnerState): boolean {
     if (typeof window === "undefined") return false;
-    const { cards, ...envelope } = state;
+    // Everything Study-owned goes to the sidecar, never the envelope.
+    const { cards, cardFlags, studyDay, ...envelope } = state;
+    // Flags can exist before any card was rated (a never-studied card can be
+    // suspended), so any Study-owned state at all is written.
+    const hasStudyState = cards !== undefined || cardFlags !== undefined || studyDay !== undefined;
     let generation: string;
     try {
       generation = learnerGeneration(readJson(this.key));
-      if (cards !== undefined) {
+      if (hasStudyState) {
+        // A state that carries no `cards` at all never erases the stored
+        // cards of this learner: they are kept, and only what the state does
+        // carry (flags, today's tally) is written over.
+        const stored = cards === undefined ? sanitizeStudyCards(readJson(this.cardsKey)) : null;
+        const kept = stored && stored.generation === generation ? stored : null;
+        const flags = cardFlags ?? kept?.flags;
+        const day = studyDay ?? kept?.studyDay;
         window.localStorage.setItem(
           this.cardsKey,
-          JSON.stringify({ version: STUDY_CARDS_VERSION, [GENERATION]: generation, cards }),
+          JSON.stringify({
+            version: STUDY_CARDS_VERSION,
+            [GENERATION]: generation,
+            cards: cards ?? kept?.cards ?? {},
+            ...(flags ? { flags } : {}),
+            ...(day ? { studyDay: day } : {}),
+          }),
         );
       } else if (sanitizeStudyCards(readJson(this.cardsKey))?.generation !== generation) {
         // Nothing to write, and whatever sidecar is stored belongs to another

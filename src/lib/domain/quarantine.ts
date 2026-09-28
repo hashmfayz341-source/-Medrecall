@@ -120,6 +120,20 @@ export function quarantineLegacyLearnerState(
     }
   }
 
+  // Suspend/bury flags of cards of untrusted concepts.
+  let cardFlags: LearnerState["cardFlags"];
+  if (learner.cardFlags) {
+    cardFlags = {};
+    for (const [itemId, flags] of Object.entries(learner.cardFlags)) {
+      if (conceptIds.has(flags.conceptId)) {
+        removedCards++;
+        if (!removedConceptIds.includes(flags.conceptId)) removedConceptIds.push(flags.conceptId);
+      } else {
+        cardFlags[itemId] = flags;
+      }
+    }
+  }
+
   // Interleaving bookkeeping, both by chunk and by injected concept.
   const injectedByChunk: LearnerState["injectedByChunk"] = {};
   for (const [chunkId, injected] of Object.entries(learner.injectedByChunk)) {
@@ -159,6 +173,7 @@ export function quarantineLegacyLearnerState(
       completedLectureIds,
       injectedByChunk,
       ...(cards ? { cards } : {}),
+      ...(cardFlags ? { cardFlags } : {}),
     },
     quarantinedConceptIds: removedConceptIds,
     quarantinedChunkIds: [...removedChunkIds],

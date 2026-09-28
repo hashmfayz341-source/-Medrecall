@@ -14,10 +14,12 @@ import {
   addLecture,
   applyOverrides,
   createOverrides,
+  editCard,
   editConcept,
   hasLegacyDocumentIdentity,
   setConceptStatus,
   setConceptStatuses,
+  type CardEdit,
   type ConceptEdit,
   type CurriculumOverrides,
   type IngestedDocument,
@@ -58,6 +60,8 @@ interface LearnerContextValue {
   updateConceptStatus: (conceptId: string, status: ConceptStatus) => void;
   updateConceptStatuses: (conceptIds: readonly string[], status: ConceptStatus) => void;
   updateConceptText: (conceptId: string, edit: ConceptEdit) => void;
+  /** Edit one Study card's wording (prompt / explanation); the card id, and so its FSRS history, is kept. */
+  updateCardText: (itemId: string, edit: CardEdit) => void;
   createLecture: (lecture: Lecture) => void;
   storeIngestedDocument: (
     ingested: IngestedDocument,
@@ -250,6 +254,11 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
     [mutate],
   );
 
+  const updateCardText = useCallback(
+    (itemId: string, edit: CardEdit) => mutate((current) => editCard(current, itemId, edit)),
+    [mutate],
+  );
+
   const createLecture = useCallback(
     (lecture: Lecture) => mutate((current) => addLecture(current, lecture)),
     [mutate],
@@ -289,6 +298,7 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
       updateConceptStatus,
       updateConceptStatuses,
       updateConceptText,
+      updateCardText,
       createLecture,
       storeIngestedDocument,
       resetAll,
@@ -303,6 +313,7 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
       updateConceptStatus,
       updateConceptStatuses,
       updateConceptText,
+      updateCardText,
       createLecture,
       storeIngestedDocument,
       resetAll,

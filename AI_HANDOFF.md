@@ -144,8 +144,30 @@ mastery).
   keep the old copy.
 - **Validate schedules against ts-fsrs, not against "is a number".** `state`
   must be a real `State` value and memory states must meet `next_state`'s
-  precondition; anything else throws inside FSRS on the next rating. Mixed-version tests run main's real code from git
-  (`tests/base-main`), not an imitation of it.
+  precondition; anything else throws inside FSRS on the next rating.
+- **Mixed-version tests run main's real code from git** (`tests/base-main`),
+  not an imitation of it.
+
+**17. Decks are derived, never stored (AD-26).** `lectureDecks`/`courseDeck`/
+`browseCards` in `lib/engine/decks.ts` read Course → Lecture → Concept every
+call. Do not add a deck table, deck membership, or a second tagging system:
+filters use lecture, item kind, concept importance and FSRS status.
+
+- **Suspend/bury are Study flags** (`LearnerState.cardFlags`, in the Study
+  sidecar): they remove a card from the queue and nothing else. Never let
+  them touch `cards[*].schedule` or concept mastery, and never treat a
+  suspended card as Tutor evidence.
+- **Bury is a stored time** (`buriedUntil` = next local midnight from `now`),
+  not a "buried today" boolean; expiry is that time passing.
+- **Daily limits** apply only when the caller passes `limits`; today's tally
+  is `learner.studyDay` (sidecar), kept by `recordCardRating`. Custom study
+  may pass no limits; it must never bypass `recordCardRating`.
+- **Card edits** (`CurriculumOverrides.cardEdits`, keyed by item id) change
+  the prompt/explanation only. The id, grading rubric, source excerpt and
+  concept status are untouched, so FSRS history survives and DRAFT stays
+  DRAFT. They apply after concept edits rebuild items, so an authored
+  concept's first title/summary edit still orphans card edits keyed by the
+  old ids (documented, accepted).
 - **A card rating is for the content that was shown.**
   `captureCardPrecondition` includes `gradingTargetFingerprint`, and any edit,
   source change or status change since Show Answer makes the rating stale.
@@ -247,7 +269,7 @@ above that interface knows where state lives.
 npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
 ```
 
-509 unit tests, 128 E2E tests (64 per project, iPad and desktop viewports). Mixed-version tests need the base commit 482824c in local git history (a normal clone has it). The E2E suite
+533 unit tests, 154 E2E tests (77 per project, iPad and desktop viewports). Mixed-version tests need the base commit 482824c in local git history (a normal clone has it). The E2E suite
 drives the real UI through the complete demo journey, including the deliberate
 ATP-depletion failure.
 

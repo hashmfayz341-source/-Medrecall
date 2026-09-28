@@ -31,6 +31,18 @@ export interface ConceptEdit {
   summary?: string;
 }
 
+/**
+ * A human edit to one Study card (a RetrievalItem), keyed by the item's id.
+ * Only the wording the learner sees is editable; the concept, its source
+ * excerpt, status and grading rubric are not. The id is unchanged, so the
+ * card's FSRS history is kept; the content fingerprint changes, so a rating
+ * revealed against the old wording is refused as stale.
+ */
+export interface CardEdit {
+  prompt?: string;
+  explanation?: string;
+}
+
 /** One ingested PDF, with the teaching chunks derived from its pages. */
 export interface IngestedDocument {
   lectureId: string;
@@ -45,6 +57,8 @@ export interface CurriculumOverrides {
   statusById: Record<string, ConceptStatus>;
   /** Title/summary edits, keyed by concept id. */
   edits: Record<string, ConceptEdit>;
+  /** Card wording edits, keyed by retrieval item id. */
+  cardEdits: Record<string, CardEdit>;
   /** Lectures created by the user, beyond the authored course. */
   lectures: Lecture[];
   /** Uploaded documents and the chunks built from them. */
@@ -58,6 +72,7 @@ export function createOverrides(): CurriculumOverrides {
     version: CURRICULUM_OVERRIDES_VERSION,
     statusById: {},
     edits: {},
+    cardEdits: {},
     lectures: [],
     ingested: [],
     concepts: [],
@@ -109,6 +124,8 @@ export function migrateOverrides(stored: unknown): CurriculumOverrides | null {
   if (!record(value.statusById) || !Object.values(value.statusById).every(status)) return null;
   if (value.edits !== undefined && (!record(value.edits) || !Object.values(value.edits).every((edit) => record(edit) &&
     (edit.title === undefined || typeof edit.title === "string") && (edit.summary === undefined || typeof edit.summary === "string")))) return null;
+  if (value.cardEdits !== undefined && (!record(value.cardEdits) || !Object.values(value.cardEdits).every((edit) => record(edit) &&
+    (edit.prompt === undefined || typeof edit.prompt === "string") && (edit.explanation === undefined || typeof edit.explanation === "string")))) return null;
   if (value.lectures !== undefined && (!Array.isArray(value.lectures) || !value.lectures.every(lectureShape))) return null;
   if (value.concepts !== undefined && (!Array.isArray(value.concepts) || !value.concepts.every(conceptShape))) return null;
   if (value.ingested !== undefined && (!Array.isArray(value.ingested) || !value.ingested.every((entry) => record(entry) &&
@@ -118,6 +135,7 @@ export function migrateOverrides(stored: unknown): CurriculumOverrides | null {
     version: CURRICULUM_OVERRIDES_VERSION,
     statusById: value.statusById,
     edits: value.edits ?? {},
+    cardEdits: value.cardEdits ?? {},
     lectures: value.lectures ?? [],
     ingested: value.ingested ?? [],
     concepts: value.concepts ?? [],
@@ -181,6 +199,35 @@ function applyEdit(concept: Concept, edit: ConceptEdit | undefined): Concept {
 }
 
 /**
+ * Card wording edits apply by item id, after any concept edit has rebuilt the
+ * items: a card that still exists keeps its id, and so its FSRS history.
+ */
+function applyCardEdits(concept: Concept, cardEdits: Record<string, CardEdit>): Concept {
+  let changed = false;
+  const retrievalItems = concept.retrievalItems.map((item) => {
+    const edit = cardEdits[item.id];
+    const prompt = edit?.prompt?.trim();
+    const explanation = edit?.explanation?.trim();
+    if (!prompt && !explanation) return item;
+    changed = true;
+    return { ...item, prompt: prompt || item.prompt, explanation: explanation || item.explanation };
+  });
+  return changed ? { ...concept, retrievalItems } : concept;
+}
+
+/**
+ * Record a card wording edit. Never touches concept status or grading.
+ */
+export function editCard(
+  overrides: CurriculumOverrides,
+  itemId: string,
+  edit: CardEdit,
+): CurriculumOverrides {
+  const existing = overrides.cardEdits[itemId] ?? {};
+  return { ...overrides, cardEdits: { ...overrides.cardEdits, [itemId]: { ...existing, ...edit } } };
+}
+
+/**
  * Compose the live curriculum: authored content, plus ingested material, plus
  * human edits and approval decisions.
  *
@@ -216,7 +263,7 @@ export function applyOverrides(
 
   const allConcepts = [...curriculum.concepts, ...overrides.concepts].map(
     (concept) => {
-      const edited = applyEdit(concept, overrides.edits[concept.id]);
+      const edited = applyCardEdits(applyEdit(concept, overrides.edits[concept.id]), overrides.cardEdits);
       const status = overrides.statusById[concept.id];
       return status ? { ...edited, status } : edited;
     },

@@ -100,7 +100,7 @@ describe("the study queue admits ACTIVE cards only", () => {
 describe("New / Learning / Review classification and counts", () => {
   it("a fresh learner has only New cards", () => {
     const q = buildStudyQueue(pathologyCurriculum, createLearnerState(), L1, T0);
-    expect(q.counts).toEqual({ new: studyCardsForLecture(pathologyCurriculum, L1).length, learning: 0, review: 0 });
+    expect(q.counts).toEqual({ new: studyCardsForLecture(pathologyCurriculum, L1).length, learning: 0, review: 0, suspended: 0, buried: 0 });
     expect(q.next?.queue).toBe("NEW");
   });
 
@@ -128,7 +128,7 @@ describe("New / Learning / Review classification and counts", () => {
     learner = rate(learner, "AGAIN", T0, cards[1]!.concept, cards[1]!.item.id).learner; // → learning
     const at = days(30);
     const q = buildStudyQueue(pathologyCurriculum, learner, L1, at);
-    expect(q.counts).toEqual({ new: cards.length - 2, learning: 1, review: 1 });
+    expect(q.counts).toEqual({ new: cards.length - 2, learning: 1, review: 1, suspended: 0, buried: 0 });
     expect(q.queue).toHaveLength(cards.length);
   });
 
