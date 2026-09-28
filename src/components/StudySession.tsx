@@ -337,6 +337,14 @@ export function StudySession({
               <span data-testid="card-source">
                 {document?.title ?? concept.source.documentId} · page {concept.source.pageNumber}
               </span>
+              {concept.additionalSources && concept.additionalSources.length > 0 && (
+                <p data-testid="card-also-sources" className="mt-1 text-xs text-ink-400">
+                  Also in{" "}
+                  {concept.additionalSources
+                    .map((s) => `${curriculum.course.lectures.flatMap((l) => l.documents).find((d) => d.id === s.documentId)?.title ?? s.documentId} · page ${s.pageNumber}`)
+                    .join("; ")}
+                </p>
+              )}
               <details className="mx-auto mt-2 max-w-xl text-left">
                 <summary
                   data-testid="view-source"

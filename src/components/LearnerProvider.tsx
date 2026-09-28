@@ -17,6 +17,9 @@ import {
   editCard,
   editConcept,
   hasLegacyDocumentIdentity,
+  keepApart,
+  mergeConcepts,
+  unmergeConcept,
   setConceptStatus,
   setConceptStatuses,
   type CardEdit,
@@ -62,6 +65,14 @@ interface LearnerContextValue {
   updateConceptText: (conceptId: string, edit: ConceptEdit) => void;
   /** Edit one Study card's wording (prompt / explanation); the card id, and so its FSRS history, is kept. */
   updateCardText: (itemId: string, edit: CardEdit) => void;
+  /** Fold a duplicate candidate into the concept it duplicates (it becomes DISCARDED). Throws MergeError. */
+  mergeDuplicate: (duplicateId: string, canonicalId: string) => void;
+  /** Undo a merge: the concept returns to DRAFT. */
+  unmergeDuplicate: (duplicateId: string) => void;
+  /** Reject a duplicate suggestion: the two stay separate concepts. */
+  keepApartDuplicate: (conceptId: string, canonicalId: string) => void;
+  /** Rejected duplicate suggestions (concept id → canonical id). */
+  keptApart: Record<string, string>;
   createLecture: (lecture: Lecture) => void;
   storeIngestedDocument: (
     ingested: IngestedDocument,
@@ -259,6 +270,20 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
     [mutate],
   );
 
+  const mergeDuplicate = useCallback(
+    (duplicateId: string, canonicalId: string) =>
+      mutate((current) => mergeConcepts(current, pathologyCurriculum, duplicateId, canonicalId)),
+    [mutate],
+  );
+  const unmergeDuplicate = useCallback(
+    (duplicateId: string) => mutate((current) => unmergeConcept(current, duplicateId)),
+    [mutate],
+  );
+  const keepApartDuplicate = useCallback(
+    (conceptId: string, canonicalId: string) => mutate((current) => keepApart(current, conceptId, canonicalId)),
+    [mutate],
+  );
+
   const createLecture = useCallback(
     (lecture: Lecture) => mutate((current) => addLecture(current, lecture)),
     [mutate],
@@ -299,6 +324,10 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
       updateConceptStatuses,
       updateConceptText,
       updateCardText,
+      mergeDuplicate,
+      unmergeDuplicate,
+      keepApartDuplicate,
+      keptApart: overrides.keptApart,
       createLecture,
       storeIngestedDocument,
       resetAll,
@@ -314,6 +343,10 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
       updateConceptStatuses,
       updateConceptText,
       updateCardText,
+      mergeDuplicate,
+      unmergeDuplicate,
+      keepApartDuplicate,
+      overrides.keptApart,
       createLecture,
       storeIngestedDocument,
       resetAll,
