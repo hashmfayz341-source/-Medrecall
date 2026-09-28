@@ -694,6 +694,59 @@ share concept mastery but not scheduling state (see AD-25). Study is not gated
 by the tutor's lecture-order lock: Anki has no such lock, and only approved
 content is studyable either way.
 
+## AD-26 — Decks, browser, suspend/bury, custom study: derived over Concepts
+
+**Decision.** Step 2 adds deck and browser views, per-card Study flags, card
+wording edits, custom study and daily limits — all as derivations over the
+existing Course → Lecture → Concept → RetrievalItem model and each card's own
+FSRS state. There is no deck entity, no deck membership, no second tagging
+system, and no second scheduling engine.
+
+- **Decks are lectures** (`lectureDecks`, `courseDeck`): each is its ACTIVE
+  concepts' cards, computed on every render. Approving, editing or discarding
+  a concept changes the deck at once; DRAFT/DISCARDED cards are never in one.
+  Counts come from `buildStudyQueueFor` over those cards — Card FSRS state
+  with the daily limits applied — never from concept mastery.
+- **The browser** (`browseCards`) lists cards with concept, lecture, source
+  document and Study status (`NEW | LEARNING | REVIEW | SUSPENDED | BURIED`,
+  plus a due-now filter). Filters use existing metadata: lecture, item kind,
+  concept importance, status, text.
+- **Suspend / bury are Study flags** in `LearnerState.cardFlags` (keyed by
+  item id, carrying the concept id so quarantine can strip them). They only
+  remove a card from the queue: `cards[*].schedule`, reviews and concept
+  mastery are untouched, resume continues the schedule exactly, and a
+  suspended card is never Tutor evidence (`hasTutorAttempt` reads the
+  concept schedule only). Bury stores `buriedUntil` = the next local midnight
+  computed from `now` (deterministic; no "today" boolean); expiry is simply
+  that time passing. Suspend and bury are distinct states. Both go through the
+  approval gate (`resolveAttemptTarget`).
+- **Card edits** (`CurriculumOverrides.cardEdits`, keyed by item id) apply
+  after concept edits have rebuilt items, changing only `prompt` and
+  `explanation`. The item id, rubric, accepted answers, source excerpt and
+  concept status are unchanged, so Card FSRS history is kept and DRAFT stays
+  DRAFT; the content fingerprint changes, so a rating revealed against the
+  old wording is refused as stale (AD-20). The Tutor asks the edited wording
+  too — one card, one truth. Known: an authored concept's *first*
+  title/summary edit rebuilds its item ids, orphaning card edits keyed by the
+  old ids.
+- **Custom study** (`resolveStudySelection`) only decides WHICH cards are in
+  the queue: a lecture, every due card across the course (no new cards), or a
+  browser filter. The queue, ordering and `recordCardRating` are the same;
+  FSRS is never altered. The one option is ignoring the daily limits. The
+  selection lives in the URL so a refresh resumes it.
+- **Daily limits** (`StudyLimits`: new per day, reviews per day; defaults
+  20/200) are preferences in `medrecall.study-settings.v1`, validated as
+  whole numbers in [0, 9999], untouched by a learner Reset. Today's tally
+  (`learner.studyDay`, in the Study sidecar) is kept by `recordCardRating`: a
+  first rating introduces a new card; rating a Review-queue card is a review;
+  learning steps count as neither. `buildStudyQueueFor` holds back new cards
+  and due reviews beyond today's remaining allowance and reports them as
+  `heldByLimits`; learning cards are never held back.
+- **Persistence.** Flags and the tally travel in the Study sidecar
+  (`{ version: 2, generation, cards, flags?, studyDay? }`), so a stale main
+  tab cannot erase them and they are bound to the learner generation like
+  cards. Malformed flags are dropped one by one; a malformed tally as a whole.
+
 ## AD-25 — FSRS schedules each card; self-ratings feed concept mastery
 
 **Decision.** `LearnerState.cards` (optional, keyed by item id) holds each

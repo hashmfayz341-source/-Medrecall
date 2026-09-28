@@ -114,10 +114,25 @@ A complete tutor running with no AI key.
       card progress in its own storage key (`medrecall.study-cards.v1`)
 - [x] Dashboard **Study** entry per lecture
 
-### Later steps (not started)
+### Step 2 — Decks, card browser, custom study (implemented, awaiting review)
 
-- [ ] Step 2: decks (management, hierarchy), card browser and editor, tags,
-      suspend/bury, custom study, daily limits and deck options
+- [x] `/study`: the course as decks (one per lecture, derived — never
+      stored), with New / Learning / Review / suspended / buried counts from
+      Card FSRS state
+- [x] `/study/browse`: card browser with concept, lecture, source and Study
+      status; filters over existing metadata (lecture, type, importance,
+      status, due, text)
+- [x] Card editing (front/back) keeping the card id and FSRS history;
+      stale-tab protection through the content fingerprint
+- [x] Suspend (until resumed) and bury (until the next local day), as Study
+      flags in the Study sidecar; mastery and schedules untouched
+- [x] Custom study: all due cards across the course, or a selection; normal
+      FSRS; may ignore the daily limits
+- [x] Daily limits (new per day, reviews per day) in `medrecall.study-settings.v1`
+- [ ] Deferred: Image Occlusion, Anki import/export, complex statistics, AI
+      card generation, shared accounts/sync
+
+### Later steps (not started)
 - [ ] Later: Image Occlusion, Anki import/export, flashcard-quality extraction
       (PDF → cards), AI card generation (with its own safeguards)
 

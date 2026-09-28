@@ -71,13 +71,38 @@ out of Study until you approve them in **Review drafts**. The earlier guided
 tutor (`/learn/<lectureId>`, typed answers graded by `/api/grade`) is still
 available.
 
+### Decks, the card browser, custom study (Step 2)
+
+- **Study decks** (`/study`): the course as decks, one per lecture, derived
+  from Course → Lecture → Concept every time (nothing stores a deck). Each
+  shows New · Learning · Review from the cards' own FSRS state, plus
+  suspended and buried counts. **Options** sets the daily limits: new cards
+  per day and reviews per day (learning steps are never limited).
+- **Card browser** (`/study/browse`): every approved card with its concept,
+  lecture, source (document · page, the excerpt one tap away, and a link into
+  concept review) and Study status. Filter by lecture, card type, concept
+  importance, status, due-now, or text — existing metadata only.
+  - **Edit** a card's front/back. The card keeps its id and FSRS history;
+    grading and the source excerpt are untouched. A rating revealed against
+    the old wording is refused as stale.
+  - **Suspend** a card to keep it out of Study until you resume it, or
+    **bury** it until the next day. Neither touches its schedule or the
+    concept's mastery.
+- **Custom study** (`/study/custom`): all due cards across the course, or a
+  selection by lecture, type, importance or status; optionally ignoring
+  today's limits. Scheduling is the normal FSRS — custom study only chooses
+  which cards.
+
 ## Status
 
-**Anki experience, Step 1: card study.** Implemented, in review. Front/back
-cards, Show Answer, Again/Hard/Good/Easy mapped one-to-one onto FSRS, per-card
-scheduling and New/Learning/Review counts. Decks, the card browser, tags,
-suspend/bury, custom study, import/export and AI card generation are later
-steps.
+**Anki experience, Step 1: card study.** Complete. Front/back cards, Show
+Answer, Again/Hard/Good/Easy mapped one-to-one onto FSRS, per-card scheduling
+and New/Learning/Review counts.
+
+**Anki experience, Step 2: decks and the card browser.** Implemented, in
+review. Deck view with counts, card browser with filters and provenance, card
+editing, suspend/bury, custom study and daily limits. Import/export, Image
+Occlusion and AI card generation are later steps.
 
 **Milestone 1 — deterministic tutor.** Complete. **No AI key required.** The
 demo course is Pathology: Cell Injury and Inflammation. The full journey works
