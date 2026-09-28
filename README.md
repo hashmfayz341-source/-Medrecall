@@ -100,12 +100,22 @@ available.
 
 ## Status
 
+**V1 released.** The complete loop — upload a PDF, review and approve its
+concepts (merging duplicates across documents), learn with the Tutor, study
+the cards, everything persisted in the browser with provenance on every card —
+is in production on `main`. Hosted model grading, Image Occlusion, Anki
+import/export, accounts and sync are V1.1 / V2 (see ROADMAP).
+
+**Duplicate candidates across documents.** Complete. Suggested in Review
+drafts, merged or kept apart by the reviewer, undoable; safe across
+concurrent tabs and malformed stored state.
+
 **Anki experience, Step 1: card study.** Complete. Front/back cards, Show
 Answer, Again/Hard/Good/Easy mapped one-to-one onto FSRS, per-card scheduling
 and New/Learning/Review counts.
 
-**Anki experience, Step 2: decks and the card browser.** Implemented, in
-review. Deck view with counts, card browser with filters and provenance, card
+**Anki experience, Step 2: decks and the card browser.** Complete. Deck view
+with counts, card browser with filters and provenance, card
 editing, suspend/bury, custom study and daily limits. Import/export, Image
 Occlusion and AI card generation are later steps.
 
