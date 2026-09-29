@@ -161,13 +161,22 @@ from `public/pdf.worker.min.mjs` by `scripts/copy-pdf-worker.mjs`
 (prebuild/predev/postinstall) — bundler-emitted worker URLs did not work in
 the production build. The session composer (`lib/engine/session.ts`) orders
 what is shown; it never reads or writes a schedule, it respects the
-existing reviews-per-day allowance, and an old card rated in the session
-returns only when FSRS makes it due. Arabic cards are rendered from the fact's
-structure (`lib/generation/arabic.ts`): noun phrases whole or as written,
-never word by word, and never "ما هو <English sentence>؟"; disclose
-`coverage.partial`. An image QUESTION needs a caption outside a raster figure
-and an answer not printed inside it; diagrams go on the back of related
-cards only. Generation takes `documents[]`; keep each card's own provenance.
+existing reviews-per-day allowance, and "near-due" comes from the persisted
+schedule (`isNearDue`: never a Learning/Relearning card; a Review card only
+past half its interval) — never from session memory, which a refresh loses.
+Arabic cards are rendered from the fact's structure (`lib/generation/arabic.ts`):
+noun phrases whole or as written, never word by word, and never "ما هو
+<English sentence>؟"; context-dependent words (by, within, most) only in the
+context recognised, else English; any remaining ordinary English makes the
+card `partial` — when unsure, partial. Never report a partial card as
+Arabic. An image QUESTION needs a caption outside a raster figure and an
+answer not printed inside it; a figure goes on a card's back only on strong
+evidence (named subject/label phrase, or two specific shared words — never
+one generic word); the same picture (`sameImage`, ≤ 4 of 64 bits) with
+contradictory captions is used nowhere. Test generation changes on the
+unseen lecture (`scripts/make-unseen-fixture.mjs`), not only the fixtures it
+was developed on. Generation takes `documents[]`; keep each card's own
+provenance.
 
 **18. Duplicate merges are reviewer decisions in the overrides (AD-27).**
 Detection (`findDuplicateCandidates`) is textual and deterministic — never

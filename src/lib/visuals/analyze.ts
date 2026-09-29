@@ -159,6 +159,62 @@ export function annotateFigures(
 /** Normalised text identity of a figure's answer, for de-duplication. */
 export const captionKey = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 
+/** The fingerprint grid: 8 × 8 cells, a 64-bit average hash. */
+export const HASH_GRID = 8;
+
+/**
+ * Average hash of an RGBA image (a rendered figure crop): every pixel is
+ * box-averaged into an 8 × 8 grey grid, and each cell is 1 when it is at or
+ * above the grid's mean. Because every source pixel counts, the same picture
+ * drawn at another size or resolution averages to (nearly) the same grid.
+ * 16 hex characters; undefined for an empty image.
+ */
+export function averageHash(rgba: ArrayLike<number>, width: number, height: number): string | undefined {
+  if (!(width >= 1 && height >= 1) || rgba.length < width * height * 4) return undefined;
+  const cells = HASH_GRID * HASH_GRID;
+  const sums = new Float64Array(cells);
+  const counts = new Float64Array(cells);
+  for (let y = 0; y < height; y++) {
+    const row = Math.min(HASH_GRID - 1, Math.floor((y * HASH_GRID) / height)) * HASH_GRID;
+    for (let x = 0; x < width; x++) {
+      const cell = row + Math.min(HASH_GRID - 1, Math.floor((x * HASH_GRID) / width));
+      const i = (y * width + x) * 4;
+      sums[cell]! += (rgba[i]! * 299 + rgba[i + 1]! * 587 + rgba[i + 2]! * 114) / 1000;
+      counts[cell]!++;
+    }
+  }
+  const grey = Array.from(sums, (sum, i) => sum / Math.max(1, counts[i]!));
+  const mean = grey.reduce((a, b) => a + b, 0) / cells;
+  let hex = "";
+  for (let i = 0; i < cells; i += 4) {
+    let nibble = 0;
+    for (let b = 0; b < 4; b++) nibble = (nibble << 1) | (grey[i + b]! >= mean ? 1 : 0);
+    hex += nibble.toString(16);
+  }
+  return hex;
+}
+
+const POPCOUNT = [0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4];
+
+/** Bits that differ between two hex fingerprints; Infinity when they are not comparable. */
+export function hashDistance(a: string, b: string): number {
+  if (a.length !== b.length || a.length === 0 || !/^[0-9a-f]+$/i.test(a) || !/^[0-9a-f]+$/i.test(b)) return Infinity;
+  let bits = 0;
+  for (let i = 0; i < a.length; i++) bits += POPCOUNT[parseInt(a[i]!, 16) ^ parseInt(b[i]!, 16)]!;
+  return bits;
+}
+
+/**
+ * The same picture, re-rendered or resized, moves a few cells across the
+ * mean; a different picture differs in many. Up to 1 bit in 16 (4 of the
+ * 64) counts as the same image — conservative, so two genuinely different
+ * figures are not merged.
+ */
+export function sameImage(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) return false;
+  return hashDistance(a, b) <= Math.floor((a.length * 4) / 16);
+}
+
 export interface PageVisuals {
   pageNumber: number;
   figures: FigureCandidate[];

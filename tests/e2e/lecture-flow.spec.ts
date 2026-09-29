@@ -338,7 +338,9 @@ test("Arabic mode writes Arabic answers with Arabic medical terms; the UI disclo
   const arabic = Number(await done.getAttribute("data-arabic"));
   const partial = Number(await done.getAttribute("data-partial"));
   expect(arabic + partial).toBe(12);
-  await expect(page.getByTestId("coverage-note")).toContainText(`${arabic} cards are written as Arabic sentences`);
+  await expect(page.getByTestId("coverage-note")).toContainText(`Fully Arabic: ${arabic} card`);
+  if (partial > 0) await expect(page.getByTestId("coverage-note")).toContainText(`Partly English: ${partial} card`);
+  await expect(page.getByTestId("coverage-note")).not.toContainText("written as Arabic sentences");
   await page.goto(`/lectures/${lectureId}`);
   const hypoxia = page.locator('[data-testid^="card-front-"]').filter({ hasText: "إصابة الخلية (cell injury)" }).first();
   const id = (await hypoxia.getAttribute("data-testid"))!.replace("card-front-", "");

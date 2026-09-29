@@ -3,6 +3,7 @@ import type { StoredAsset } from "@/lib/persistence/assetStore";
 import {
   analyzeOperatorList,
   annotateFigures,
+  averageHash,
   figureAssetId,
   pageAssetId,
   selectFigures,
@@ -74,29 +75,18 @@ function toBlob(canvas: HTMLCanvasElement, quality: number): Promise<Blob | null
 }
 
 /**
- * A small perceptual hash of a rendered figure (8×8 grey, thresholded at the
- * mean): the same picture drawn on two pages hashes the same, a different
- * picture does not. Good enough to keep one image from getting two answers.
+ * The rendered figure's average hash (`averageHash`): the same picture drawn
+ * on two pages, at any size, hashes the same or within a few bits, so one
+ * image cannot get two answers.
  */
 export function imageHash(source: HTMLCanvasElement): string | undefined {
-  const tiny = document.createElement("canvas");
-  tiny.width = 8;
-  tiny.height = 8;
-  const ctx = tiny.getContext("2d");
-  if (!ctx) return undefined;
-  ctx.drawImage(source, 0, 0, 8, 8);
-  let data: Uint8ClampedArray;
+  const ctx = source.getContext("2d");
+  if (!ctx || source.width < 1 || source.height < 1) return undefined;
   try {
-    data = ctx.getImageData(0, 0, 8, 8).data;
+    return averageHash(ctx.getImageData(0, 0, source.width, source.height).data, source.width, source.height);
   } catch {
     return undefined;
   }
-  const grey: number[] = [];
-  for (let i = 0; i < data.length; i += 4) grey.push((data[i]! * 299 + data[i + 1]! * 587 + data[i + 2]! * 114) / 1000);
-  const mean = grey.reduce((a, b) => a + b, 0) / grey.length;
-  let bits = "";
-  for (const g of grey) bits += g >= mean ? "1" : "0";
-  return parseInt(bits.slice(0, 32), 2).toString(16).padStart(8, "0") + parseInt(bits.slice(32), 2).toString(16).padStart(8, "0");
 }
 
 function crop(source: HTMLCanvasElement, region: PageRegion): HTMLCanvasElement {

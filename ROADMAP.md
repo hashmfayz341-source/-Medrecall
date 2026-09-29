@@ -52,6 +52,14 @@ the internal layer and the Tutor remains a separate feature.
       the answer; old cards rated in a session return only when due;
       interleaving within the reviews-per-day limit; Generate more over a
       lecture's several PDFs
+- [x] Final merge-gate fixes, tested on an unseen lecture: partial Arabic
+      detected from untranslated English structure and disclosed as *Partly
+      English*; temporal "by"/"within" and "most specific" keep their
+      meaning; repeated pictures matched perceptually (≤ 4 of 64 bits);
+      images attached only on strong evidence; near-due read from the
+      persisted FSRS state (Again returns only when its step is due, also
+      after a refresh); the lecture header wraps its actions below long
+      titles
 - [ ] Not in this step: full translation of every sentence (needs a hosted
       generator behind Stage B abuse control), OCR, figure understanding
       beyond captions and labels

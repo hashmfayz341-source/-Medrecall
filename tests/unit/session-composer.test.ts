@@ -3,7 +3,8 @@ import { pathologyCurriculum as C } from "@/lib/content/pathology";
 import { addLecture, applyOverrides, createOverrides, setConceptStatuses } from "@/lib/domain/curriculum";
 import type { Concept, Lecture, LearnerState } from "@/lib/domain/types";
 import { buildStudyQueue, buryCard, recordCardRating, studyCardsForLecture, suspendCard } from "@/lib/engine/study";
-import { NEAR_DUE_HORIZON_MS, REVIEW_EVERY, composeSession, eligibleOldReviews } from "@/lib/engine/session";
+import { NEAR_DUE_HORIZON_MS, REVIEW_EVERY, composeSession, eligibleOldReviews, isNearDue } from "@/lib/engine/session";
+import { queueForSchedule } from "@/lib/engine/scheduler";
 import { createLearnerState } from "@/lib/engine/tutor";
 
 /**
@@ -55,8 +56,9 @@ describe("eligible old reviews", () => {
     const learner = studyOld(curriculum, createLearnerState(), T0);
     const oldCards = studyCardsForLecture(curriculum, OLD);
     const firstDue = Math.min(...oldCards.map(({ item }) => new Date(learner.cards![item.id]!.schedule.due).getTime()));
-    // Nothing is due one minute later: GOOD on a new card schedules a learning step minutes away, but not overdue.
-    expect(eligibleOldReviews(curriculum, learner, NEW, new Date(T0.getTime() + 1_000))).not.toEqual([]); // near-due within 24h
+    // GOOD on a new card schedules a learning step minutes away. A card in its
+    // learning steps is never "near-due": nothing is eligible until the step is due.
+    expect(eligibleOldReviews(curriculum, learner, NEW, new Date(T0.getTime() + 1_000))).toEqual([]);
     const now = new Date(firstDue + 1_000);
     const reviews = eligibleOldReviews(curriculum, learner, NEW, now);
     expect(reviews.length).toBeGreaterThan(0);
@@ -185,47 +187,89 @@ function reviewState() {
   return { curriculum, lecture, learner, cards, later: new Date(lastDue + 60 * 60_000) };
 }
 
-describe("Fix 3: an old card rated in this session is not re-inserted before FSRS makes it due again", () => {
+describe("Fix 3: a rated old card is not re-inserted before FSRS makes it due — from persisted FSRS state, across refreshes", () => {
+  // No session memory exists any more: every call below is what a refresh,
+  // another tab or a new session computes from the stored card alone.
+  const eligible = (curriculum: ReturnType<typeof applyOverrides>, learner: LearnerState, id: string, at: Date) =>
+    eligibleOldReviews(curriculum, learner, NEW, at).find((r) => r.card.item.id === id) ?? null;
+
   for (const rating of ["HARD", "GOOD", "EASY"] as const) {
-    it(`${rating}: not back before its new due time — not even as "near-due" — and eligible again once due`, () => {
+    it(`${rating}: not back after a refresh; near-due only in the last part of its new interval; due at its due time`, () => {
       const { curriculum, learner, later } = reviewState();
       const target = eligibleOldReviews(curriculum, learner, NEW, later)[0]!;
-      const after = recordCardRating(curriculum, learner, { conceptId: target.card.concept.id, itemId: target.card.item.id, rating, now: later }).learner;
-      const newDue = new Date(after.cards![target.card.item.id]!.schedule.due);
-      expect(newDue.getTime()).toBeGreaterThan(later.getTime());
-      const rated = new Set([target.card.item.id]);
-      const inSession = (at: Date) => eligibleOldReviews(curriculum, after, NEW, at, { ratedThisSession: rated }).some((r) => r.card.item.id === target.card.item.id);
-      // Right after rating, and a minute before the new due time: never.
-      expect(inSession(new Date(later.getTime() + 60_000))).toBe(false);
-      expect(inSession(new Date(newDue.getTime() - 60_000))).toBe(false);
-      // Without session identity, the same card WOULD come back as near-due inside the horizon (the reported bug).
-      const nearWindow = new Date(Math.max(later.getTime() + 60_000, newDue.getTime() - NEAR_DUE_HORIZON_MS + 60_000));
-      if (nearWindow < newDue) {
-        expect(eligibleOldReviews(curriculum, after, NEW, nearWindow).some((r) => r.card.item.id === target.card.item.id && r.reason === "near")).toBe(true);
-        expect(inSession(nearWindow)).toBe(false);
-      }
-      // Once FSRS makes it due, it is eligible again.
-      expect(inSession(new Date(newDue.getTime() + 1_000))).toBe(true);
+      const id = target.card.item.id;
+      const after = recordCardRating(curriculum, learner, { conceptId: target.card.concept.id, itemId: id, rating, now: later }).learner;
+      const newDue = new Date(after.cards![id]!.schedule.due);
+      const interval = newDue.getTime() - later.getTime();
+      expect(interval).toBeGreaterThanOrEqual(24 * 3_600_000);
+      // Refresh a minute later, an hour later, and just before half the interval: not eligible.
+      for (const offset of [60_000, 3_600_000, interval / 2 - 60_000]) expect(eligible(curriculum, after, id, new Date(later.getTime() + offset))).toBeNull();
+      // Within the horizon of its due time AND past half its interval: near-due, as designed.
+      const nearAt = new Date(Math.max(later.getTime() + interval / 2 + 60_000, newDue.getTime() - NEAR_DUE_HORIZON_MS + 60_000));
+      expect(eligible(curriculum, after, id, nearAt)?.reason).toBe("near");
+      // At its due time: due.
+      expect(eligible(curriculum, after, id, new Date(newDue.getTime() + 1_000))?.reason).toBe("due");
       // Nothing about the FSRS record was changed by the composer.
-      expect(after.cards![target.card.item.id]!.schedule.due).toBe(newDue.toISOString());
+      expect(after.cards![id]!.schedule.due).toBe(newDue.toISOString());
     });
   }
 
-  it("AGAIN: the card relearns and legitimately comes back in the same session when its relearning step is due", () => {
+  it("HARD on a young review card (a one-day interval, as long as the near-due horizon) is not near-due right after rating", () => {
+    const { curriculum } = newLecture();
+    // Again → Good → Good graduates the old cards with a one-day interval.
+    let learner = studyOld(curriculum, createLearnerState(), T0, "AGAIN");
+    const target = studyCardsForLecture(curriculum, OLD)[0]!;
+    const id = target.item.id;
+    for (let i = 0; i < 2; i++) {
+      const due = new Date(learner.cards![id]!.schedule.due);
+      learner = recordCardRating(curriculum, learner, { conceptId: target.concept.id, itemId: id, rating: "GOOD", now: due }).learner;
+    }
+    const reviewDue = new Date(learner.cards![id]!.schedule.due);
+    learner = recordCardRating(curriculum, learner, { conceptId: target.concept.id, itemId: id, rating: "HARD", now: reviewDue }).learner;
+    const newDue = new Date(learner.cards![id]!.schedule.due);
+    expect(newDue.getTime() - reviewDue.getTime()).toBe(24 * 3_600_000); // exactly the horizon
+    // A refresh one minute later: due in 23h59m — inside the horizon, but it was just rated. Not eligible.
+    expect(eligible(curriculum, learner, id, new Date(reviewDue.getTime() + 60_000))).toBeNull();
+    expect(eligible(curriculum, learner, id, new Date(reviewDue.getTime() + 11 * 3_600_000))).toBeNull();
+    // Past half its interval it is near-due; at its due time, due.
+    expect(eligible(curriculum, learner, id, new Date(reviewDue.getTime() + 12 * 3_600_000 + 60_000))?.reason).toBe("near");
+    expect(eligible(curriculum, learner, id, new Date(newDue.getTime() + 1_000))?.reason).toBe("due");
+  });
+
+  it("AGAIN: relearning — not eligible after a refresh before its step, eligible (and composed back) once the step is due", () => {
     const { curriculum, lecture, learner, later } = reviewState();
     const target = eligibleOldReviews(curriculum, learner, NEW, later)[0]!;
-    const after = recordCardRating(curriculum, learner, { conceptId: target.card.concept.id, itemId: target.card.item.id, rating: "AGAIN", now: later }).learner;
-    const newDue = new Date(after.cards![target.card.item.id]!.schedule.due);
+    const id = target.card.item.id;
+    const after = recordCardRating(curriculum, learner, { conceptId: target.card.concept.id, itemId: id, rating: "AGAIN", now: later }).learner;
+    const newDue = new Date(after.cards![id]!.schedule.due);
     expect(newDue.getTime() - later.getTime()).toBeLessThan(60 * 60_000); // a relearning step, minutes away
-    const rated = new Set([target.card.item.id]);
-    expect(eligibleOldReviews(curriculum, after, NEW, new Date(later.getTime() + 30_000), { ratedThisSession: rated }).some((r) => r.card.item.id === target.card.item.id)).toBe(false);
+    expect(queueForSchedule(after.cards![id]!.schedule)).toBe("LEARNING");
+    // Refresh after 30 s, after 1 minute, and a minute before the step: not eligible (never "near").
+    for (const at of [later.getTime() + 30_000, later.getTime() + 60_000, newDue.getTime() - 60_000]) expect(eligible(curriculum, after, id, new Date(at))).toBeNull();
     const due = new Date(newDue.getTime() + 1_000);
-    const back = eligibleOldReviews(curriculum, after, NEW, due, { ratedThisSession: rated }).find((r) => r.card.item.id === target.card.item.id)!;
+    const back = eligible(curriculum, after, id, due)!;
     expect(back.reason).toBe("due");
     expect(back.card.queue).toBe("LEARNING");
     // And it is composed back into the session.
-    const session = composeSession(buildStudyQueue(curriculum, after, NEW, due).queue, lecture, eligibleOldReviews(curriculum, after, NEW, due, { ratedThisSession: rated }));
-    expect(session.some((c) => c.origin === "review" && c.item.id === target.card.item.id)).toBe(true);
+    const session = composeSession(buildStudyQueue(curriculum, after, NEW, due).queue, lecture, eligibleOldReviews(curriculum, after, NEW, due));
+    expect(session.some((c) => c.origin === "review" && c.item.id === id)).toBe(true);
+  });
+
+  it("isNearDue: Learning/Relearning never; Review only inside the horizon and past half its interval", () => {
+    const day = 24 * 3_600_000;
+    const now = new Date(T0.getTime() + 10 * day);
+    const schedule = (lastDaysAgo: number, dueInHours: number, state: number) => ({
+      due: new Date(now.getTime() + dueInHours * 3_600_000).toISOString(),
+      last_review: new Date(now.getTime() - lastDaysAgo * day).toISOString(),
+      stability: 5, difficulty: 5, elapsed_days: 0, scheduled_days: 0, learning_steps: 0, reps: 3, lapses: 0, state,
+    });
+    expect(isNearDue(schedule(0.001, 0.2, 3), "LEARNING", now)).toBe(false); // relearning step in 12 min
+    expect(isNearDue(schedule(0.001, 0.2, 1), "LEARNING", now)).toBe(false); // learning step
+    expect(isNearDue(schedule(9, 3, 2), "REVIEW", now)).toBe(true); // 9 days of a ~9-day interval passed, due in 3 h
+    expect(isNearDue(schedule(0.001, 23.9, 2), "REVIEW", now)).toBe(false); // just rated, one-day interval
+    expect(isNearDue(schedule(0.6, 10, 2), "REVIEW", now)).toBe(true); // 14.4 h of a 24.4 h interval passed
+    expect(isNearDue(schedule(9, 30, 2), "REVIEW", now)).toBe(false); // outside the horizon
+    expect(isNearDue(schedule(9, -1, 2), "REVIEW", now)).toBe(false); // already due: "due", not "near"
   });
 });
 

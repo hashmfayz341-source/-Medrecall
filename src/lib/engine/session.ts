@@ -1,4 +1,4 @@
-import type { Curriculum, LearnerState, Lecture } from "@/lib/domain/types";
+import type { Curriculum, LearnerState, Lecture, ScheduleState } from "@/lib/domain/types";
 import { queueForSchedule } from "./scheduler";
 import { cardFlagsFor, isBuried, isSuspended, studyCardsForLecture, type StudyCard } from "./study";
 
@@ -31,23 +31,44 @@ export interface OldReview {
 
 const REASON_RANK: Record<OldReviewReason, number> = { overdue: 0, due: 1, near: 2 };
 
+/** A Review card is near-due only once at least this share of its current interval has passed. */
+export const NEAR_DUE_MIN_ELAPSED = 0.5;
+
+export interface EligibilityOptions {
+  /** Review cards due within this window count as near-due. */
+  horizonMs?: number;
+}
+
+/**
+ * Whether a card is "near forgetting" — read from its persisted FSRS
+ * schedule only, so a refresh, another tab or a new session sees the same
+ * answer:
+ * - a Learning / Relearning card (a new card's steps, or Again on a review)
+ *   is never near-due: its step is FSRS's own short interval and it comes
+ *   back exactly when that step is due;
+ * - a Review card is near-due when it is due within the horizon AND most of
+ *   its interval has already passed. A card just rated Hard / Good / Easy
+ *   has its whole new interval ahead of it (FSRS's shortest review interval
+ *   is a day, the horizon's length), so it never qualifies until its
+ *   interval is at least half over.
+ */
+export function isNearDue(schedule: ScheduleState, queue: StudyCard["queue"], now: Date, horizonMs = NEAR_DUE_HORIZON_MS): boolean {
+  if (queue !== "REVIEW") return false;
+  const t = now.getTime();
+  const dueAt = new Date(schedule.due).getTime();
+  if (!(dueAt > t && dueAt <= t + horizonMs)) return false;
+  const lastAt = schedule.last_review ? new Date(schedule.last_review).getTime() : dueAt - schedule.scheduled_days * 24 * 60 * 60_000;
+  const interval = dueAt - lastAt;
+  if (!Number.isFinite(interval) || interval <= 0) return true;
+  return t - lastAt >= interval * NEAR_DUE_MIN_ELAPSED;
+}
+
 /**
  * Cards of OTHER lectures that qualify for insertion, most urgent first:
- * overdue, then due now, then due within the horizon. Never new cards
- * (FSRS has no memory of them yet), never suspended or buried ones, never
- * the current lecture's own cards. Reads existing FSRS data only.
+ * overdue, then due now, then near-due (`isNearDue`). Never new cards (FSRS
+ * has no memory of them yet), never suspended or buried ones, never the
+ * current lecture's own cards. Reads existing FSRS data only.
  */
-export interface EligibilityOptions {
-  /** Cards due within this window count as near-due. */
-  horizonMs?: number;
-  /**
-   * Item ids of old reviews already rated in this session. Once rated, a
-   * card is eligible again only when FSRS actually makes it due (Again's
-   * learning step, minutes away), never merely near-due: Hard, Good and
-   * Easy push it past the session.
-   */
-  ratedThisSession?: ReadonlySet<string>;
-}
 
 export function eligibleOldReviews(
   curriculum: Curriculum,
@@ -56,7 +77,7 @@ export function eligibleOldReviews(
   now: Date,
   options: EligibilityOptions | number = {},
 ): OldReview[] {
-  const { horizonMs = NEAR_DUE_HORIZON_MS, ratedThisSession } = typeof options === "number" ? { horizonMs: options } : options;
+  const { horizonMs = NEAR_DUE_HORIZON_MS } = typeof options === "number" ? { horizonMs: options } : options;
   const t = now.getTime();
   const out: OldReview[] = [];
   for (const lecture of curriculum.course.lectures) {
@@ -73,7 +94,7 @@ export function eligibleOldReviews(
       let reason: OldReviewReason;
       if (dueAt <= t - OVERDUE_AFTER_MS) reason = "overdue";
       else if (dueAt <= t) reason = "due";
-      else if (dueAt <= t + horizonMs && !ratedThisSession?.has(item.id)) reason = "near";
+      else if (isNearDue(progress.schedule, queue, now, horizonMs)) reason = "near";
       else continue;
       out.push({ card: { concept, item, progress, queue, due }, reason, lecture });
     }

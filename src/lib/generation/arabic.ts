@@ -58,7 +58,7 @@ const GENERAL: Record<string, string> = {
 
 /** Words that go BEFORE the noun in Arabic too: quantifiers, ordinals, and "increased/decreased X". */
 const PRENOMINAL: Record<string, string> = {
-  "almost all": "معظم", all: "جميع", most: "معظم", many: "العديد من", several: "عدة", some: "بعض", each: "كل", every: "كل",
+  "almost all": "معظم", all: "جميع", many: "العديد من", several: "عدة", some: "بعض", each: "كل", every: "كل",
   first: "أول", earliest: "أبكر", increased: "زيادة", decreased: "انخفاض", reduced: "انخفاض", elevated: "ارتفاع", raised: "ارتفاع",
   low: "انخفاض", high: "ارتفاع", impaired: "ضعف", excessive: "فرط",
 };
@@ -118,9 +118,122 @@ const CONNECTORS: Record<string, string> = {
   develops: "يتطور", prevents: "يمنع", promotes: "يعزز", stimulates: "يحفز", mediate: "تتوسط", mediates: "يتوسط",
   elicit: "يُحدث", elicits: "يُحدث", arrive: "تصل", arrives: "يصل", because: "لأن", also: "أيضًا", mainly: "بشكل رئيسي",
   often: "غالبًا", usually: "عادةً", only: "فقط", which: "الذي", that: "الذي", and: "و", or: "أو", with: "مع", without: "دون",
-  within: "داخل", into: "إلى", to: "إلى", from: "من", in: "في", after: "بعد", before: "قبل", during: "أثناء", between: "بين",
-  by: "بواسطة", for: "لـ", than: "من", as: "كـ", at: "عند", on: "على", is: "هو", are: "هي", not: "لا", no: "لا",
+  "such as": "مثل", "as well as": "وكذلك", into: "إلى", to: "إلى", from: "من", in: "في", after: "بعد", before: "قبل",
+  during: "أثناء", between: "بين", for: "لـ", than: "من", as: "كـ", at: "عند", on: "على", is: "هو", are: "هي", not: "لا", no: "لا",
 };
+
+/*
+ * Context-dependent words. A global dictionary would change medical meaning:
+ * "by six weeks" is a deadline (بحلول), "cleaved by enzymes" an agent;
+ * "within ten minutes" is a duration (خلال), "within hepatocytes" a place
+ * (داخل); "most patients" is a quantity (معظم), "most specific" a
+ * superlative. Each is translated only in the context it is recognised in;
+ * otherwise the English stays and the card is reported as partial.
+ */
+
+/** Time after these prepositions: the Arabic temporal preposition. */
+const TEMPORAL: Record<string, string> = {
+  by: "بحلول", within: "خلال", in: "خلال", for: "لمدة", after: "بعد", before: "قبل", during: "خلال", at: "عند", on: "في",
+  "up to": "حتى", over: "على مدى",
+};
+/** Non-temporal readings that are safe everywhere else. "by" has none: its English stays. */
+const PLACE: Record<string, string> = { within: "داخل" };
+
+const NUMBER_WORDS: Record<string, number> = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+  fifteen: 15, twenty: 20, thirty: 30, "twenty-four": 24, "forty-eight": 48, "seventy-two": 72,
+};
+/** [singular, dual, plural (3–10), accusative singular (11+), feminine]. */
+const TIME_UNITS: Record<string, [string, string, string, string, boolean]> = {
+  second: ["ثانية", "ثانيتين", "ثوانٍ", "ثانية", true], minute: ["دقيقة", "دقيقتين", "دقائق", "دقيقة", true],
+  hour: ["ساعة", "ساعتين", "ساعات", "ساعة", true], day: ["يوم", "يومين", "أيام", "يومًا", false],
+  week: ["أسبوع", "أسبوعين", "أسابيع", "أسبوعًا", false], month: ["شهر", "شهرين", "أشهر", "شهرًا", false],
+  year: ["سنة", "سنتين", "سنوات", "سنة", true],
+};
+const APPROXIMATELY: Record<string, string> = { about: "حوالي", approximately: "حوالي", around: "حوالي", roughly: "حوالي", nearly: "نحو" };
+
+function numberOf(word: string | undefined): number | null {
+  if (!word) return null;
+  if (/^\d+(\.\d+)?$/.test(word)) return Number(word);
+  return NUMBER_WORDS[word] ?? null;
+}
+
+function unitOf(word: string | undefined): [string, string, string, string, boolean] | null {
+  if (!word) return null;
+  return TIME_UNITS[word] ?? TIME_UNITS[word.replace(/s$/, "")] ?? null;
+}
+
+/** A counted duration: "one minute", "six to eight weeks", "about 24 hours", "the first three days". */
+function timePhrase(lows: readonly string[], start: number): { ar: string; len: number } | null {
+  let i = start;
+  let lead = "";
+  if (lows[i] === "the" && (lows[i + 1] === "first" || lows[i + 1] === "last")) {
+    lead = lows[i + 1] === "first" ? "أول " : "آخر ";
+    i += 2;
+  }
+  const approx = APPROXIMATELY[lows[i] ?? ""];
+  if (approx) i++;
+  const from = numberOf(lows[i]);
+  if (from === null) return null;
+  i++;
+  let to: number | null = null;
+  if ((lows[i] === "to" || lows[i] === "or" || lows[i] === "-" || lows[i] === "–") && numberOf(lows[i + 1]) !== null) {
+    to = numberOf(lows[i + 1]);
+    i += 2;
+  }
+  const unit = unitOf(lows[i]);
+  if (!unit) return null;
+  i++;
+  const [singular, dual, plural, accusative, feminine] = unit;
+  const upper = to ?? from;
+  const counted = (n: number) => (!Number.isInteger(n) || (n >= 3 && n <= 10) ? plural : accusative);
+  let text: string;
+  if (to !== null) text = `${from} إلى ${to} ${counted(upper)}`;
+  else if (from === 1) text = lead ? singular : `${singular} ${feminine ? "واحدة" : "واحد"}`;
+  else if (from === 2) text = dual;
+  else text = `${from} ${counted(from)}`;
+  return { ar: `${lead}${approx ? `${approx} ` : ""}${text}`, len: i - start };
+}
+
+/*
+ * Ordinary English: function words, auxiliaries, pronouns, adverbs, number
+ * and time words, and everyday adjectives. Left in English they are the
+ * sentence's structure, not a medical term kept on purpose, so a card that
+ * keeps any of them is partial. (Medical noun phrases the lexicon does not
+ * know stay in English by design and do not make a card partial.)
+ */
+const ORDINARY_ENGLISH = new Set([
+  "a", "an", "the", "this", "that", "these", "those", "it", "its", "they", "them", "their", "there", "here", "which", "who", "whom",
+  "whose", "what", "when", "where", "why", "how", "whether", "if", "then", "than", "so", "such", "very", "more", "less", "least",
+  "most", "much", "many", "few", "any", "both", "either", "neither", "other", "another", "same", "own", "just", "even", "still",
+  "already", "yet", "again", "ever", "never", "always", "often", "sometimes", "about", "approximately", "around", "nearly",
+  "almost", "roughly", "out", "over", "under", "above", "below", "across", "through", "throughout", "along",
+  "among", "against", "toward", "towards", "upon", "onto", "off", "per", "via", "since", "until", "till", "unless", "while",
+  "whereas", "although", "though", "however", "therefore", "thus", "hence", "instead", "rather", "quite", "too", "well", "of",
+  "by", "be", "been", "being", "am", "was", "were", "has", "have", "had", "having", "do", "does", "did", "done", "can", "could",
+  "may", "might", "must", "shall", "should", "will", "would", "one", "two", "three", "four", "five", "six", "seven", "eight",
+  "nine", "ten", "eleven", "twelve", "twenty", "thirty", "hundred", "second", "seconds", "minute", "minutes", "hour", "hours",
+  "day", "days", "week", "weeks", "month", "months", "year", "years", "typical", "important", "similar", "different", "usual",
+  "likely", "unlikely", "possible", "known", "certain", "various", "our", "your", "we", "you", "alone", "faster", "slower", "greater", "larger", "smaller", "higher",
+  "lower", "earlier", "later", "longer", "shorter", "better", "worse",
+]);
+
+/** A kept English noun phrase longer than this is a clause, not a term. */
+const MAX_TERM_WORDS = 4;
+
+/** Whether English words kept as written read as sentence structure rather than a medical term. */
+function ordinaryEnglish(words: readonly string[]): boolean {
+  if (words.length > MAX_TERM_WORDS) return true;
+  return words.some((word, i) => {
+    // A capital letter or numeral is a label, not an article or a pronoun:
+    // "hepatitis A", "type I", "vitamin D", "stage IV".
+    if (/^[A-Z]$/.test(word) || /^[IVX]+$/.test(word)) return false;
+    const w = word.toLowerCase();
+    if (ORDINARY_ENGLISH.has(w) || (/ly$/.test(w) && w.length > 4)) return true;
+    // "tissue replaces necrotic": a verb between two words of the phrase.
+    return i > 0 && i < words.length - 1 && /[^s]s$/.test(w) && !/(is|us|ss|ys)$/.test(w) && !keepsLatin(word);
+  });
+}
 
 const ARTICLES = new Set(["the", "a", "an"]);
 /** A single-word verb followed by "of" is a noun ("Causes of cell injury"). */
@@ -208,6 +321,13 @@ function renderChunk(raws: readonly string[], mode: ArabicMode): ChunkResult | n
   const prefix: string[] = [];
   let start = 0;
   for (;;) {
+    // "most" is a quantity only before a noun the lexicon knows ("most patients");
+    // before anything else ("most specific marker") it may be a superlative: kept.
+    if (lows[start] === "most" && start + 1 < lows.length && isKnownNoun(lows.slice(start + 1).join(" "))) {
+      prefix.push("معظم");
+      start += 1;
+      continue;
+    }
     const hit = longest(PRENOMINAL, lows, start, 2);
     if (!hit || start + hit.len >= lows.length) break;
     prefix.push(hit.ar);
@@ -235,9 +355,14 @@ function renderChunk(raws: readonly string[], mode: ArabicMode): ChunkResult | n
     }
   }
 
-  // Kept as written: a term if short, a clause if long.
+  // Kept as written: a medical term, or English sentence structure (partial).
   const english = coreRaw.join(" ");
-  return { text: `${pre}${english}`, arabic: prefix.length > 0, bracketed: false, clause: core.length > 5 && !core.every((w) => keepsLatin(w)) };
+  return { text: `${pre}${english}`, arabic: prefix.length > 0, bracketed: false, clause: !coreRaw.every(keepsLatin) && ordinaryEnglish(coreRaw) };
+}
+
+/** A noun (or noun phrase) the lexicon knows, in either mode. */
+function isKnownNoun(key: string): boolean {
+  return GENERAL[key] !== undefined || MEDICAL[key] !== undefined;
 }
 
 export interface RenderedPhrase {
@@ -287,10 +412,39 @@ export function renderPhrase(source: string, mode: ArabicMode): RenderedPhrase {
     }
     if (token.low === "of") {
       // Arabic idafa needs no preposition after an Arabic head; after a
-      // bracketed term "لـ" keeps it readable; between English words it stays.
+      // bracketed term "لـ" keeps it readable; between English words it
+      // stays — English structure, so the card is partial.
       const prev = previous as ChunkResult | null;
       if (prev?.arabic) out.push(prev.bracketed ? "لـ" : "");
-      else out.push("of");
+      else {
+        out.push("of");
+        partial = true;
+      }
+      i++;
+      continue;
+    }
+    // A counted duration, with its temporal preposition when it has one.
+    const preposition = longest(TEMPORAL, lows, i, 2);
+    const time = timePhrase(lows, i + (preposition?.len ?? 0));
+    if (time) {
+      out.push(preposition ? `${preposition.ar} ${time.ar}` : time.ar);
+      hasArabic = true;
+      previous = null;
+      i += (preposition?.len ?? 0) + time.len;
+      continue;
+    }
+    if (PLACE[token.low]) {
+      out.push(PLACE[token.low]!);
+      hasArabic = true;
+      previous = null;
+      i++;
+      continue;
+    }
+    if (token.low === "by" && !longest(CONNECTORS, lows, i, 4)) {
+      // An agent or a means with no recognised verb: left in English.
+      out.push(token.raw);
+      partial = true;
+      previous = null;
       i++;
       continue;
     }
@@ -322,7 +476,7 @@ export function renderPhrase(source: string, mode: ArabicMode): RenderedPhrase {
       if (t.kind !== "word") break;
       if (t.low === "of") break;
       const isNoun = NOUN_BEFORE_OF.has(t.low) && lows[i + 1] === "of";
-      if (raws.length > 0 && !isNoun && longest(CONNECTORS, lows, i, 4)) break;
+      if (raws.length > 0 && !isNoun && (longest(CONNECTORS, lows, i, 4) || PLACE[t.low] || t.low === "by" || timeAhead(lows, i))) break;
       if (keepsLatin(t.raw) && raws.length === 0 && GENERAL[t.low] === undefined) {
         raws.push(t.raw);
         i++;
@@ -337,7 +491,20 @@ export function renderPhrase(source: string, mode: ArabicMode): RenderedPhrase {
   return { text, partial, hasArabic };
 }
 
+/** Whether a counted duration starts here (with or without its preposition). */
+function timeAhead(lows: readonly string[], i: number): boolean {
+  const preposition = longest(TEMPORAL, lows, i, 2);
+  return timePhrase(lows, i + (preposition?.len ?? 0)) !== null;
+}
+
 const coverage = (...parts: RenderedPhrase[]): Coverage => (parts.some((p) => p.partial) ? "partial" : "arabic");
+
+/** A rendered card side with no Arabic word at all is not an Arabic sentence. */
+const ARABIC_LETTER = /[\u0600-\u06FF]/;
+function coverageOf(card: { prompt: string; explanation: string }, ...parts: RenderedPhrase[]): Coverage {
+  if (!ARABIC_LETTER.test(card.prompt) || !ARABIC_LETTER.test(card.explanation)) return "partial";
+  return coverage(...parts);
+}
 
 /* ------------------------------------------------------------------ */
 /* Templates                                                            */
@@ -369,11 +536,21 @@ export function renderSuperlative(subject: string, rest: string, mode: ArabicMod
   const object = renderPhrase(match[2]!, mode);
   const subj = renderPhrase(subject, mode);
   const head = `${noun} ${qualifier[1]}`;
-  return {
-    prompt: `ما هو ${head} لـ ${object.text}؟`,
-    explanation: `${subj.text} هو ${head} لـ ${object.text}.`,
-    coverage: coverage(object, subj),
-  };
+  return card(`ما هو ${head} لـ ${object.text}؟`, `${subj.text} هو ${head} لـ ${object.text}.`, object, subj);
+}
+
+/** A card with its coverage: partial when any part kept English structure, or a side has no Arabic at all. */
+function card(prompt: string, explanation: string, ...parts: RenderedPhrase[]): RenderedArabic {
+  return { prompt, explanation, coverage: coverageOf({ prompt, explanation }, ...parts) };
+}
+
+/**
+ * A card whose answer is terms, not a sentence (a list, a figure's caption):
+ * medical terms kept in English are the design, so only English sentence
+ * structure in a term, or an English question, makes it partial.
+ */
+function termsCard(prompt: string, explanation: string, ...parts: RenderedPhrase[]): RenderedArabic {
+  return { prompt, explanation, coverage: ARABIC_LETTER.test(prompt) ? coverage(...parts) : "partial" };
 }
 
 /** Participles that make "X is <participle> …" a statement, not a definition. */
@@ -387,17 +564,17 @@ export function renderDefinition(subject: string, predicate: string, mode: Arabi
   if (defined) {
     const rest = renderPhrase(defined[2]!, mode);
     return defined[1]!.toLowerCase() === "as"
-      ? { prompt: `ما تعريف ${subj.text}؟`, explanation: `يُعرَّف ${subj.text} بأنه ${rest.text}.`, coverage: coverage(subj, rest) }
-      : { prompt: `بماذا يُعرَّف ${subj.text}؟`, explanation: `يُعرَّف ${subj.text} بـ ${rest.text}.`, coverage: coverage(subj, rest) };
+      ? card(`ما تعريف ${subj.text}؟`, `يُعرَّف ${subj.text} بأنه ${rest.text}.`, subj, rest)
+      : card(`بماذا يُعرَّف ${subj.text}؟`, `يُعرَّف ${subj.text} بـ ${rest.text}.`, subj, rest);
   }
   const marked = /^(?:characteri[sz]ed|marked)\s+by\s+(.+)$/i.exec(body);
   if (marked) {
     const rest = renderPhrase(marked[1]!, mode);
-    return { prompt: `بماذا يتميز ${subj.text}؟`, explanation: `يتميز ${subj.text} بـ ${rest.text}.`, coverage: coverage(subj, rest) };
+    return card(`بماذا يتميز ${subj.text}؟`, `يتميز ${subj.text} بـ ${rest.text}.`, subj, rest);
   }
   if (NOT_A_DEFINITION.test(body)) return null;
   const pred = renderPhrase(body, mode);
-  return { prompt: `ما هو ${subj.text}؟`, explanation: `${subj.text} هو ${pred.text}.`, coverage: coverage(subj, pred) };
+  return card(`ما هو ${subj.text}؟`, `${subj.text} هو ${pred.text}.`, subj, pred);
 }
 
 const MECHANISM_FORMS: [RegExp, (c: string) => string, (c: string, e: string) => string][] = [
@@ -417,7 +594,7 @@ export function renderMechanism(cause: string, connector: string, effect: string
   const c = renderPhrase(cause.replace(/\s+(is|are)$/i, ""), mode);
   const e = renderPhrase(effect, mode);
   const form = MECHANISM_FORMS.find(([re]) => re.test(connector.trim()))!;
-  return { prompt: form[1](c.text), explanation: form[2](c.text, e.text), coverage: coverage(c, e) };
+  return card(form[1](c.text), form[2](c.text, e.text), c, e);
 }
 
 /**
@@ -428,8 +605,11 @@ export function renderMechanism(cause: string, connector: string, effect: string
  */
 export function renderList(heading: string, items: readonly string[], mode: ArabicMode): RenderedArabic {
   const h = renderPhrase(heading, mode);
-  const rendered = items.map((item) => (mode === "ar" ? renderPhrase(item, mode).text : item) || item);
-  return { prompt: `اذكر ${h.text}.`, explanation: `${rendered.join("، ")}.`, coverage: coverage(h) };
+  const phrases = items.map((item) => renderPhrase(item, mode));
+  const rendered = items.map((item, i) => (mode === "ar" ? phrases[i]!.text : item) || item);
+  // The answer is a list of terms: Arabic structure is the instruction, so
+  // only English sentence structure inside the heading or an item is partial.
+  return termsCard(`اذكر ${h.text}.`, `${rendered.join("، ")}.`, h, ...phrases);
 }
 
 /** Any other sentence: an Arabic fill-in-the-blank; the sentence rendered by the same rules. */
@@ -438,16 +618,18 @@ export function renderCloze(sentence: string, subject: string, mode: ArabicMode)
   const blanked = idx >= 0 ? `${sentence.slice(0, idx)}___${sentence.slice(idx + subject.length)}` : `___ ${sentence}`;
   const full = renderPhrase(sentence, mode);
   const gap = renderPhrase(blanked, mode);
-  return { prompt: `أكمل الفراغ: ${gap.text}`, explanation: `${full.text}.`, coverage: coverage(full, gap) };
+  const out = card(`أكمل الفراغ: ${gap.text}`, `${full.text}.`, full, gap);
+  // The sentence's own verb (the word after the subject) left in English:
+  // "Granulation tissue replaces …" is an English clause, not a term.
+  const predicate = idx >= 0 ? sentence.slice(idx + subject.length).trim().replace(/^\([^)]*\)\s*/, "").toLowerCase().split(/\s+/).filter(Boolean) : [];
+  const verbTranslated = predicate.length === 0 || longest(CONNECTORS, predicate, 0, 4) !== null || timeAhead(predicate, 0);
+  return verbTranslated ? out : { ...out, coverage: "partial" };
 }
 
 /** An image card whose answer is the figure's caption (and the slide's heading, when it adds something). */
 export function renderFigure(answer: string, heading: string | null, mode: ArabicMode): RenderedArabic {
   const a = renderPhrase(answer, mode);
   const h = heading ? renderPhrase(heading, mode) : null;
-  return {
-    prompt: "ماذا تُظهر هذه الصورة؟",
-    explanation: h ? `${a.text} — ${h.text}.` : `${a.text}.`,
-    coverage: h ? coverage(a, h) : coverage(a),
-  };
+  const explanation = h ? `${a.text} — ${h.text}.` : `${a.text}.`;
+  return h ? termsCard("ماذا تُظهر هذه الصورة؟", explanation, a, h) : termsCard("ماذا تُظهر هذه الصورة؟", explanation, a);
 }

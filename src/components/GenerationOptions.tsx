@@ -52,7 +52,8 @@ export function LanguagePicker({
           {value === "ar"
             ? "Questions and answers are written in Arabic. Medical terms MedRecall's built-in vocabulary knows are given in Arabic with the English in brackets; other terms stay in English. "
             : "Questions and answers are written in Arabic; medical terminology stays in English. "}
-          Sentences outside the patterns the built-in generator supports keep part of the lecture&apos;s English — the result says how many. Full
+          Where the built-in generator cannot translate a sentence safely it keeps the lecture&apos;s English and marks the card partly English —
+          the result says how many. Full
           translation of every sentence needs a configured generation provider.
         </p>
       )}
@@ -61,8 +62,10 @@ export function LanguagePicker({
 }
 
 /**
- * After generation in an Arabic mode: how many cards are Arabic sentences,
- * and how many kept part of the lecture's English. Never hidden.
+ * After generation in an Arabic mode: how many cards are fully Arabic, and
+ * how many are partly English (sentence structure the built-in generator
+ * could not translate safely, so it kept the lecture's wording). Never
+ * hidden, never rounded up to "Arabic".
  */
 export function ArabicCoverageNote({
   language,
@@ -74,12 +77,24 @@ export function ArabicCoverageNote({
   testId: string;
 }) {
   if (language === "en") return null;
+  const terms = language === "ar-en" ? "medical terms kept in English" : "terms outside the built-in vocabulary kept in English";
+  const cards = (n: number) => `${n} ${n === 1 ? "card" : "cards"}`;
   return (
-    <p data-testid={testId} data-arabic={coverage.arabic} data-partial={coverage.partial} className="mt-1 text-sm text-emerald-900">
-      {coverage.arabic} {coverage.arabic === 1 ? "card is" : "cards are"} written as Arabic sentences
-      {coverage.partial > 0
-        ? `; ${coverage.partial} ${coverage.partial === 1 ? "keeps" : "keep"} part of the lecture's English wording (outside the built-in generator's patterns — review or edit them).`
-        : "."}
+    <p
+      data-testid={testId}
+      data-arabic={coverage.arabic}
+      data-partial={coverage.partial}
+      className={`mt-1 text-sm ${coverage.partial > 0 ? "text-amber-900" : "text-emerald-900"}`}
+    >
+      {coverage.partial === 0 ? (
+        <>Fully Arabic: {cards(coverage.arabic)} ({terms}).</>
+      ) : (
+        <>
+          Fully Arabic: {cards(coverage.arabic)} ({terms}). <strong>Partly English: {cards(coverage.partial)}</strong> — the built-in
+          generator could not translate part of the sentence safely, so it kept the lecture&apos;s English there. Review or edit them before
+          approving.
+        </>
+      )}
     </p>
   );
 }

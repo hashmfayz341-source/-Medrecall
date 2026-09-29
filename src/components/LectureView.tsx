@@ -206,10 +206,15 @@ export function LectureView({ lectureId }: { lectureId: string }) {
   return (
     <Shell>
       <div data-testid="lecture-view" data-lecture-id={lecture.id}>
-        <header className="flex flex-wrap items-start justify-between gap-4">
-          <div className="min-w-0 flex-1">
+        {/*
+          The title keeps a readable column (at least 24rem, the whole row when
+          the actions do not fit beside it): the actions wrap onto their own
+          line below instead of overlapping a long lecture title.
+        */}
+        <header data-testid="lecture-header" className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
+          <div data-testid="lecture-title-block" className="min-w-0 flex-[1_1_24rem]">
             {titleDraft === null ? (
-              <h1 dir="auto" data-testid="lecture-heading" className="text-3xl font-bold tracking-tight text-ink-800">
+              <h1 dir="auto" data-testid="lecture-heading" className="text-3xl font-bold tracking-tight text-ink-800 [overflow-wrap:anywhere]">
                 {lecture.title}
               </h1>
             ) : (
@@ -249,7 +254,7 @@ export function LectureView({ lectureId }: { lectureId: string }) {
               </p>
             )}
           </div>
-          <div className="flex flex-wrap gap-3">
+          <div data-testid="lecture-actions" className="flex flex-wrap gap-3">
             {isUserLecture && titleDraft === null && (
               <Button variant="secondary" data-testid="rename-lecture" onClick={() => setTitleDraft(lecture.title)}>
                 Rename

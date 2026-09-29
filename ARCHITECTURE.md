@@ -726,8 +726,18 @@ Tutor remains available on the demo course.
   English; `ar` writes the ones its general lexicon knows in Arabic with the
   English in brackets and puts adjective + noun phrases in Arabic order.
   Templates exist for the generator's fact kinds; anything else becomes an
-  Arabic fill-in-the-blank, and a card whose sentence kept an English clause
-  is counted as `partial` and disclosed in the UI. The source excerpt stays
+  Arabic fill-in-the-blank. Words whose meaning depends on context are
+  translated only in the context recognised — "by" / "within" / "in" /
+  "for" + a counted duration are temporal (بحلول / خلال / لمدة, the number
+  and unit in Arabic), "within" + anything else is a place (داخل), "most" is
+  معظم only before a noun the lexicon knows; otherwise the English stays.
+  A card is `partial` when any ordinary English (function words, verbs,
+  "of" between English words, a sentence's own untranslated verb, a kept
+  phrase longer than a term) or a sentence side with no Arabic word
+  remains; medical terms kept in English by design do not make a card
+  partial. The UI counts *Fully Arabic* and *Partly English* cards and never
+  calls a partial card Arabic (`generateCards` also returns `partialIds`).
+  The source excerpt stays
   the lecture's verbatim English; View source shows it. Full translation is
   a hosted-generator capability behind the same boundary. Arabic text is
   laid out with `dir="auto"`.
@@ -737,12 +747,18 @@ Tutor remains available on the demo course.
   are the text inside it. Only a raster figure with a caption becomes a
   question, answered by that caption, and not when the answer is printed
   inside the picture. A sentence elsewhere on the slide never answers an
-  image. A labelled diagram is not a question (it shows its answer); it
-  illustrates the back of text cards that share a specific word with its
-  caption or labels, and a figure with neither is attached to nothing.
-  Figures whose rendered content is identical (a perceptual hash) keep one
-  question when their captions agree and none when they contradict; an
-  image question that only repeats a text card is dropped.
+  image. A labelled diagram is not a question (it shows its answer). A
+  figure illustrates the back of a text card on its own page only on strong
+  evidence: the card names the figure's subject (the caption before "of /
+  in / with …") or one of its labels as a specific phrase, or shares at
+  least two specific words with it; words common to a whole pathology
+  lecture ("necrosis", "injury", "tissue", …) never count. A figure with no
+  caption or labels is attached to nothing. The same picture — a 64-bit
+  average hash (every pixel box-averaged into 8 × 8, so size does not
+  matter) equal or within 4 bits (`sameImage`) — keeps one question when
+  its captions agree; with contradictory captions it is neither a question
+  nor on any card's back. An image question that only repeats a text card
+  is dropped.
 - **Generation reads the lecture's documents, not "the" document.** A
   lecture may hold several PDFs (*Add a PDF*); *Generate more* reads all of
   them or the one chosen, de-duplicates against the whole lecture, and every
@@ -769,9 +785,13 @@ Tutor remains available on the demo course.
   Inserted REVIEW-queue cards draw on the existing *reviews per day*
   allowance — what today's reviews and the lecture's own shown reviews
   leave — most urgent first; learning cards are never limited, as in any
-  queue. An old card rated in the session is remembered: it returns only
-  when FSRS makes it due again (Again's relearning step), never as
-  near-due, so Hard, Good and Easy do not bring it back early.
+  queue. "Near-due" is read from the card's persisted FSRS schedule only
+  (`isNearDue`), so a refresh or another tab computes the same thing: a
+  Learning / Relearning card (Again) is never near-due — it returns exactly
+  when its step is due — and a Review card is near-due only when it is due
+  within the horizon AND at least half its interval has passed, so a card
+  just rated Hard / Good / Easy (FSRS's shortest review interval is the
+  horizon's length, a day) is not re-inserted early.
 - **One commit per upload.** The lecture, its document, chunks, figure
   metadata, cards and language are stored in a single `commitOverrides`
   mutation, so an interrupted upload leaves nothing half-made.

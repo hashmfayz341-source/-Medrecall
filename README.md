@@ -92,9 +92,11 @@ micrograph or scan becomes an image *question* only when its caption (the
 text just outside it) says what it shows, and that answer is not printed
 inside the picture. A labelled diagram shows its own answer, so it is used
 on the *back* of the text cards it is about instead. A figure with no
-caption or labels is not attached to anything. The same picture on two
-slides never gets two different answers. Logos, repeated branding, icons and
-rules are rejected.
+caption or labels is not attached to anything, and a figure goes on the back
+of a card only when the card names what the figure shows (a word shared by
+the whole lecture, like "necrosis", is not enough). The same picture on two
+slides — even drawn at different sizes — never gets two different answers.
+Logos, repeated branding, icons and rules are rejected.
 
 **Languages.** *English* cards are the lecture's own sentences. *Arabic +
 English medical terms* writes Arabic questions and answers around English
@@ -105,8 +107,11 @@ with the English in brackets ("نقص الأكسجة (Hypoxia) هو السبب �
 لـ إصابة الخلية (cell injury)."). The built-in generator renders the common
 sentence patterns (most common cause, defined as, caused by, leads to,
 results in, characterized by, first manifestation, increased/decreased,
-sequences, lists); a sentence outside them keeps part of its English, and
-the result screen says how many such cards there are. Full translation of
+sequences, lists) and keeps time expressions right ("by six weeks" →
+"بحلول 6 أسابيع", "within 12 hours" → "خلال 12 ساعة"). Where it cannot
+translate part of a sentence safely it keeps the lecture's English rather
+than guess, and the result screen counts those cards as *Partly English* —
+never as Arabic. Full translation of
 every sentence needs a configured generation provider (a later, separately
 safeguarded step).
 
@@ -114,7 +119,8 @@ safeguarded step).
 Cell Injury cards that FSRS says are overdue, due, or due within the next day
 are mixed in — about one after every four Inflammation cards, within
 today's *reviews per day* limit. A card you rate comes back only when FSRS
-makes it due again (Again's relearning step), never earlier in the session. They show a
+makes it due again (Again's relearning step), never earlier — also after a
+refresh. They show a
 neutral *Review* chip before the answer and their lecture and page after it,
 and rating them updates their own FSRS history; they never join the new
 lecture. FSRS decides *when* a card is due; the session composer only
@@ -227,9 +233,9 @@ Verification:
 ```bash
 npm run lint
 npm run typecheck
-npm run test         # 619 unit tests
+npm run test         # 643 unit tests
 npm run build
-npm run e2e          # 178 Playwright tests, iPad + desktop viewports
+npm run e2e          # 184 Playwright tests, iPad + desktop viewports
 ```
 
 `npm run verify` chains lint, typecheck, unit tests and the production build.
@@ -288,6 +294,7 @@ Regenerate the test fixtures with:
 ```bash
 node scripts/make-fixture-pdf.mjs        # the small ingestion fixtures
 node scripts/make-lecture-fixtures.mjs   # Cell Injury.pdf and Inflammation.pdf, with figures
+node scripts/make-unseen-fixture.mjs     # the unseen lecture used by the merge-gate regression tests
 ```
 
 ## Documentation

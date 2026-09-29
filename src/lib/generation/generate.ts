@@ -1,7 +1,7 @@
 import { normalize } from "@/lib/domain/text";
 import { contentWords } from "@/lib/domain/duplicates";
 import type { CardImage, CardLanguage, Concept, ConceptImportance, RetrievalItem, RetrievalKind, SourceDocument } from "@/lib/domain/types";
-import { captionKey, figureAssetId, type PageVisuals } from "@/lib/visuals/analyze";
+import { captionKey, captionTarget, figureAssetId, sameImage, type PageVisuals } from "@/lib/visuals/analyze";
 import {
   renderCloze,
   renderDefinition,
@@ -72,6 +72,8 @@ export interface GeneratedCards {
    * (disclosed in the UI, never hidden). Both zero in English.
    */
   coverage: { arabic: number; partial: number };
+  /** The partial cards' ids (Arabic modes), so a reviewer can find them. */
+  partialIds: string[];
 }
 
 /** AUTO keeps facts at or above this score: the important material, once. */
@@ -211,25 +213,59 @@ function asCloze(fact: Fact): Fact {
   return { ...fact, kind: "statement" };
 }
 
-/** Words too generic to show that a figure is about a sentence. */
-const GENERIC = new Set(["cell", "cells", "cellular", "change", "changes", "figure", "image", "tissue", "shown", "showing", "from", "with", "normal"]);
+/**
+ * Words too generic to show, on their own, that a figure is about a
+ * sentence: shared by most slides of a pathology lecture ("necrosis",
+ * "injury", "tissue") or by any image ("figure", "section", "stain").
+ */
+const GENERIC = new Set([
+  "cell", "cells", "cellular", "change", "changes", "figure", "image", "tissue", "tissues", "shown", "showing", "from", "with",
+  "normal", "necrosis", "necrotic", "injury", "injuries", "damage", "damaged", "disease", "diseases", "lesion", "lesions",
+  "inflammation", "inflammatory", "infection", "tumour", "tumor", "tumours", "tumors", "cancer", "death", "degeneration",
+  "pattern", "patterns", "type", "types", "stage", "stages", "section", "sections", "stain", "stained", "staining", "view",
+  "specimen", "patient", "patients", "organ", "organs", "acute", "chronic", "early", "late", "severe", "mild", "micrograph",
+  "photomicrograph", "histology", "magnification", "arrow", "arrows", "power", "field", "area", "areas", "region", "feature",
+  "features", "example", "appearance", "typical", "classic",
+]);
+
+/** Prepositions that end a caption's subject: "coagulative necrosis | of myocardial fibres". */
+const SUBJECT_END = /\s+(?:of|in|with|showing|from|at|on|after|during|within|following|and|versus|vs)\s+/i;
 
 interface PageFigure {
   image: CardImage;
-  /** Content words of the figure's caption and labels: what it is about. */
+  /** Phrases that name what the figure is: the caption's subject, and each label. */
+  phrases: string[];
+  /** Specific (non-generic) content words of the caption and labels. */
   words: Set<string>;
 }
 
+function pageFigure(image: CardImage, caption: string | undefined, labels: readonly string[]): PageFigure | null {
+  const subject = caption ? captionTarget(caption).split(SUBJECT_END)[0]!.trim() : "";
+  const phrases = [subject, ...labels].map((p) => normalize(p)).filter((p) => p.length > 0);
+  const words = new Set([...contentWords([caption ? captionTarget(caption) : "", ...labels].join(" "))].filter((w) => !GENERIC.has(w)));
+  return phrases.length === 0 && words.size === 0 ? null : { image, phrases, words };
+}
+
+/** A phrase that names something specific: at least one word that is not generic. */
+const specificPhrase = (phrase: string) => phrase.split(" ").some((w) => w.length >= 3 && !GENERIC.has(w));
+
 /**
- * A figure belongs on the back of a text card only when its caption or
- * labels share a specific word with the card's sentence — i.e. it is
- * demonstrably about the same thing. A figure with no caption and no labels
- * is never attached.
+ * A figure belongs on the back of a text card only on strong evidence that it
+ * shows what the card is about (no image is better than a wrong one):
+ * - the card names the figure's subject or one of its labels — a specific
+ *   phrase ("coagulative necrosis", "plaque rupture", "steatosis"), never a
+ *   generic word alone ("necrosis"); or
+ * - the card and the figure share at least two specific words.
+ * A figure with no caption and no labels is never attached; figures come
+ * from the card's own page only.
  */
 function relatedFigure(fact: Fact, figures: readonly PageFigure[]): CardImage | undefined {
+  const text = ` ${normalize(`${fact.text} ${fact.term}`)} `;
   const words = contentWords(`${fact.text} ${fact.term}`);
   for (const figure of figures) {
-    for (const w of words) if (!GENERIC.has(w) && figure.words.has(w)) return { ...figure.image, placement: "back" };
+    const named = figure.phrases.some((phrase) => specificPhrase(phrase) && text.includes(` ${phrase} `));
+    const shared = [...figure.words].filter((w) => words.has(w)).length;
+    if (named || shared >= 2) return { ...figure.image, placement: "back" };
   }
   return undefined;
 }
@@ -272,27 +308,56 @@ function conceptFor(located: Located, input: GenerateCardsInput, figuresOnPage: 
 }
 
 /**
- * One picture, one answer. Figures whose rendered content is identical
- * (same perceptual hash, across pages and documents) keep a single image
- * question when their captions agree; when the captions disagree the
- * picture cannot be the answer to either, so neither becomes a question.
- * Provenance is untouched: every asset stays on its own page.
+ * Pictures that appear more than once with captions that disagree: the same
+ * picture — perceptual hashes equal or within a few bits (`sameImage`: the
+ * same image re-rendered or resized), across pages and documents — captioned
+ * as two different things. Such a picture cannot be the answer to either
+ * caption, nor illustrate a card: the asset ids of every copy.
  */
-function dropContradictoryFigures(facts: readonly Located[]): Located[] {
-  const byHash = new Map<string, Located[]>();
-  for (const located of facts) {
-    const hash = located.fact.figure?.contentHash;
-    if (located.fact.kind !== "figure" || !hash) continue;
-    byHash.set(hash, [...(byHash.get(hash) ?? []), located]);
+function contradictoryFigures(documents: readonly GenerationDocument[]): Set<string> {
+  const figures = documents.flatMap((doc) =>
+    (doc.visuals ?? []).flatMap((page) =>
+      page.figures.flatMap((figure, i) =>
+        figure.contentHash && figure.caption
+          ? [{ assetId: figureAssetId(doc.id, page.pageNumber, i), hash: figure.contentHash, caption: captionKey(captionTarget(figure.caption)) }]
+          : [],
+      ),
+    ),
+  );
+  const contradictory = new Set<string>();
+  for (const group of sameImageGroups(figures.map((f) => f.hash))) {
+    const members = group.map((i) => figures[i]!);
+    if (new Set(members.map((m) => m.caption)).size > 1) for (const m of members) contradictory.add(m.assetId);
   }
-  const drop = new Set<Located>();
-  for (const group of byHash.values()) {
-    if (group.length < 2) continue;
-    const answers = new Set(group.map((l) => captionKey(l.fact.figure!.answer)));
-    if (answers.size > 1) for (const l of group) drop.add(l);
-    else for (const l of group.slice(1)) drop.add(l);
+  return contradictory;
+}
+
+/** Indexes grouped by "same picture" (connected components of `sameImage`; a handful of figures, so pairwise is fine). */
+function sameImageGroups(hashes: readonly string[]): number[][] {
+  const parent = hashes.map((_, i) => i);
+  const root = (i: number): number => (parent[i] === i ? i : (parent[i] = root(parent[i]!)));
+  for (let i = 0; i < hashes.length; i++) {
+    for (let j = i + 1; j < hashes.length; j++) if (sameImage(hashes[i], hashes[j])) parent[root(j)] = root(i);
   }
-  return facts.filter((l) => !drop.has(l));
+  const groups = new Map<number, number[]>();
+  hashes.forEach((_, i) => groups.set(root(i), [...(groups.get(root(i)) ?? []), i]));
+  return [...groups.values()];
+}
+
+/**
+ * One picture, one answer. A picture with contradictory captions
+ * (`contradictoryFigures`) never becomes a question; copies of one picture
+ * whose captions agree keep a single image question (the first). Provenance
+ * is untouched: every asset stays on its own page.
+ */
+function dropRepeatedFigures(facts: readonly Located[], contradictory: ReadonlySet<string>): Located[] {
+  const assetOf = (l: Located) => figureAssetId(l.documentId, l.fact.pageNumber, l.fact.figure!.index);
+  const figures = facts.filter((l) => l.fact.kind === "figure" && l.fact.figure?.contentHash);
+  const drop = new Set<Located>(figures.filter((l) => contradictory.has(assetOf(l))));
+  for (const group of sameImageGroups(figures.map((l) => l.fact.figure!.contentHash!))) {
+    for (const i of group.slice(1)) drop.add(figures[i]!);
+  }
+  return facts.filter((l) => !drop.has(l) && !(l.fact.kind === "figure" && contradictory.has(assetOf(l))));
 }
 
 /**
@@ -334,7 +399,8 @@ export function generateCards(input: GenerateCardsInput): GeneratedCards {
     extractFacts(doc.pages, doc.visuals ?? []).map((fact) => ({ fact, documentId: doc.id })),
   );
   const textFacts = extracted.filter((l) => l.fact.kind !== "figure").map((l) => l.fact);
-  const all = dropContradictoryFigures(extracted).filter((l) => l.fact.kind !== "figure" || !isRedundantFigure(l.fact, textFacts));
+  const contradictory = contradictoryFigures(documents);
+  const all = dropRepeatedFigures(extracted, contradictory).filter((l) => l.fact.kind !== "figure" || !isRedundantFigure(l.fact, textFacts));
 
   const existingIds = new Set(input.existing.map((e) => e.id));
   const existingTexts = input.existing.map((e) => ({ text: e.summary }));
@@ -361,16 +427,12 @@ export function generateCards(input: GenerateCardsInput): GeneratedCards {
   for (const doc of documents) {
     for (const page of doc.visuals ?? []) {
       page.figures.forEach((figure, i) => {
-        const words = contentWords([figure.caption ?? "", ...(figure.labels ?? [])].join(" "));
-        if (words.size === 0) return;
+        const image: CardImage = { assetId: figureAssetId(doc.id, page.pageNumber, i), documentId: doc.id, pageNumber: page.pageNumber, region: figure.region, placement: "back" };
+        if (contradictory.has(image.assetId)) return;
+        const described = pageFigure(image, figure.caption, figure.labels ?? []);
+        if (!described) return;
         const key = `${doc.id}#${page.pageNumber}`;
-        figuresOnPage.set(key, [
-          ...(figuresOnPage.get(key) ?? []),
-          {
-            image: { assetId: figureAssetId(doc.id, page.pageNumber, i), documentId: doc.id, pageNumber: page.pageNumber, region: figure.region, placement: "back" },
-            words,
-          },
-        ]);
+        figuresOnPage.set(key, [...(figuresOnPage.get(key) ?? []), described]);
       });
     }
   }
@@ -410,5 +472,6 @@ export function generateCards(input: GenerateCardsInput): GeneratedCards {
       arabic: selected.filter((c) => c.coverage === "arabic").length,
       partial: selected.filter((c) => c.coverage === "partial").length,
     },
+    partialIds: selected.filter((c) => c.coverage === "partial").map((c) => c.concept.id),
   };
 }

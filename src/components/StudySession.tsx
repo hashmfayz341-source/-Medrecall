@@ -73,12 +73,6 @@ export function StudySession({
    * after every four current cards" cadence as the queue shifts.
    */
   const [currentSinceReview, setCurrentSinceReview] = useState(0);
-  /**
-   * Old reviews already rated in this session. They return only when FSRS
-   * makes them due again (Again's relearning step), never merely near-due:
-   * Hard, Good and Easy schedule them past the session.
-   */
-  const [ratedReviews, setRatedReviews] = useState<ReadonlySet<string>>(() => new Set());
   /** Precondition keys already rated from this screen: a second tap is ignored. */
   const rated = useRef(new Set<string>());
   // The keys describe card versions. Once the learner state has moved on —
@@ -121,14 +115,14 @@ export function StudySession({
     if (selection.kind !== "lecture" || !resolved.lecture) {
       return study.queue.map((card) => ({ ...card, origin: "current" as const, lecture: resolved.lecture ?? curriculum.course.lectures[0]! }));
     }
-    const old = eligibleOldReviews(curriculum, learner, resolved.lecture.id, now, { ratedThisSession: ratedReviews });
+    const old = eligibleOldReviews(curriculum, learner, resolved.lecture.id, now);
     // The existing reviews-per-day limit covers inserted old reviews too:
     // what is left after today's reviews and this lecture's own shown ones.
     const maxReviews = ignoreLimits
       ? undefined
       : Math.max(0, limits.reviewsPerDay - studyDayCounts(learner, now).reviews - study.counts.review);
     return composeSession(study.queue, resolved.lecture, old, { currentSinceReview, maxReviews });
-  }, [study, selection.kind, resolved.lecture, curriculum, learner, now, currentSinceReview, ratedReviews, ignoreLimits, limits]);
+  }, [study, selection.kind, resolved.lecture, curriculum, learner, now, currentSinceReview, ignoreLimits, limits]);
 
   const current: SessionCard | null =
     (session.length > 0 && (session.find((c) => c.item.id === revealedId) ?? session[0])) || null;
@@ -174,10 +168,6 @@ export function StudySession({
       setLearner(result.learner);
       // An inserted old review resets the cadence; a current card advances it.
       setCurrentSinceReview((n) => (current.origin === "review" ? 0 : n + 1));
-      if (current.origin === "review") {
-        const id = current.item.id;
-        setRatedReviews((set) => new Set([...set, id]));
-      }
     } catch (cause) {
       // Nothing was recorded, so this showing must not stay marked as rated:
       // otherwise a legitimate rating after the card reappears is ignored.
