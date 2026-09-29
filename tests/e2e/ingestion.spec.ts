@@ -234,6 +234,10 @@ test("a newly created lecture starts empty and locked", async ({ page }) => {
   await page.getByTestId("create-lecture").click();
   await expect(page.getByTestId("lecture-select")).toContainText("Neoplasia");
 
+  // Home lists it in the lecture library (empty: no cards, so no Study button).
   await page.goto("/");
-  await expect(page.getByText("3. Neoplasia")).toBeVisible();
+  const entry = page.locator('[data-testid^="library-"][data-testid$="neoplasia"], [data-testid^="library-lecture-neoplasia"]').first();
+  await expect(page.getByTestId("lecture-library")).toContainText("Neoplasia");
+  await expect(entry).toContainText("0 cards");
+  await expect(page.locator('[data-testid^="study-lecture-neoplasia"]')).toHaveCount(0);
 });

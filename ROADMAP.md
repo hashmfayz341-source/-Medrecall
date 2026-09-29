@@ -18,6 +18,57 @@ card generation, accounts and sync, hand-editing the prerequisite graph,
 rendered page images in View source, OCR for scanned PDFs, additional
 courses.
 
+## Lecture → flashcards — product correction (implemented, awaiting review)
+
+The default experience is now *Lecture → Flashcards → Study*; Concepts stay
+the internal layer and the Tutor remains a separate feature.
+
+- [x] Home is a lecture library: **Upload lecture** first; each lecture shows
+      its real title (from the file name, editable), card counts and due
+      cards, with Study / Cards; the demo course sits below
+- [x] Generation settings per upload: language (English, Arabic, Arabic +
+      English medical terms — persisted per lecture) and count (20 / 40 /
+      60 / 100 / Custom / Auto); a count is met only when the lecture
+      supports it, never padded, and the shortfall is shown
+- [x] Every page rendered as an image in the browser and stored in
+      IndexedDB; raster figures and vector diagrams detected from pdfjs
+      operator lists; logos, repeated branding, icons and rules rejected
+- [x] Direct card generation behind a third provider role
+      (`getGenerationProvider()`, `POST /api/generate`): definitions,
+      superlatives, mechanisms (consequence blanked, diagram on the back),
+      lists, clozes, image cards on original figures; grounded and
+      de-duplicated; DRAFT until approved
+- [x] Review cards: approve / edit / discard / approve all; View source
+      with excerpt and page image; Generate more (new facts only, FSRS
+      history kept)
+- [x] Study session composer above FSRS: overdue, due and near-due (24 h)
+      cards of other lectures mixed in, one after every four current cards;
+      neutral *Review* chip before the answer, origin after; ratings update
+      the old card's own history
+- [x] RTL layout for Arabic prompts (`dir="auto"`), iPad-sized targets
+- [x] Merge-gate fixes: Arabic cards rendered from the fact's structure
+      (Arabic questions and answers; mixed keeps medical terms English;
+      partial cards disclosed); image questions only when a caption grounds
+      the answer; old cards rated in a session return only when due;
+      interleaving within the reviews-per-day limit; Generate more over a
+      lecture's several PDFs
+- [x] Final merge-gate fixes, tested on an unseen lecture: partial Arabic
+      detected from untranslated English structure and disclosed as *Partly
+      English*; temporal "by"/"within" and "most specific" keep their
+      meaning; repeated pictures matched perceptually (≤ 4 of 64 bits);
+      images attached only on strong evidence; near-due read from the
+      persisted FSRS state (Again returns only when its step is due, also
+      after a refresh); the lecture header wraps its actions below long
+      titles
+- [x] Last three merge-gate fixes: English relative clauses and verbs with
+      objects make an Arabic card *Partly English*; "within" + an uncounted
+      duration ("several minutes", "a minute") is temporal, داخل only
+      before a recognised place, otherwise English; an image is never
+      attached to a card about another subtype of the same entity
+- [ ] Not in this step: full translation of every sentence (needs a hosted
+      generator behind Stage B abuse control), OCR, figure understanding
+      beyond captions and labels
+
 ## Milestone 1 — Deterministic tutor ✅
 
 A complete tutor running with no AI key.

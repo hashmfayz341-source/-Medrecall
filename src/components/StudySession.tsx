@@ -7,16 +7,19 @@ import { ButtonLink } from "./ui";
 import {
   buildStudyQueueFor,
   captureCardPrecondition,
+  studyDayCounts,
   formatInterval,
   recordCardRating,
   type CardRatingPrecondition,
-  type StudyCard,
   type StudyQueueKind,
 } from "@/lib/engine/study";
 import { resolveStudySelection, type StudySelection } from "@/lib/engine/decks";
+import { composeSession, eligibleOldReviews, type SessionCard } from "@/lib/engine/session";
 import { useStudySettings } from "./useStudySettings";
+import { CardImage } from "./CardImage";
 import { newSchedule, previewRatings } from "@/lib/engine/scheduler";
 import { StaleAttemptError } from "@/lib/domain/errors";
+import { pageAssetId } from "@/lib/visuals/analyze";
 import type { RetrievalKind, SelfRating } from "@/lib/domain/types";
 
 /*
@@ -64,6 +67,12 @@ export function StudySession({
   const [revealedId, setRevealedId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const precondition = useRef<CardRatingPrecondition | null>(null);
+  /**
+   * Current-lecture cards rated since the last inserted old review. The
+   * session composer is stateless; this count keeps the "one old review
+   * after every four current cards" cadence as the queue shifts.
+   */
+  const [currentSinceReview, setCurrentSinceReview] = useState(0);
   /** Precondition keys already rated from this screen: a second tap is ignored. */
   const rated = useRef(new Set<string>());
   // The keys describe card versions. Once the learner state has moved on —
@@ -98,9 +107,27 @@ export function StudySession({
     };
   }, [ready, missingLecture, resolved, curriculum, learner, now, limits, ignoreLimits]);
 
-  const current: StudyCard | null =
-    (study && (study.queue.find((c) => c.item.id === revealedId) ?? study.next)) || null;
+  // What appears next: the lecture's own queue with older cards that FSRS
+  // says are overdue, due or about to come due mixed in (session composer).
+  // FSRS decides WHEN a card is due; the composer only orders the session.
+  const session = useMemo<SessionCard[]>(() => {
+    if (!study) return [];
+    if (selection.kind !== "lecture" || !resolved.lecture) {
+      return study.queue.map((card) => ({ ...card, origin: "current" as const, lecture: resolved.lecture ?? curriculum.course.lectures[0]! }));
+    }
+    const old = eligibleOldReviews(curriculum, learner, resolved.lecture.id, now);
+    // The existing reviews-per-day limit covers inserted old reviews too:
+    // what is left after today's reviews and this lecture's own shown ones.
+    const maxReviews = ignoreLimits
+      ? undefined
+      : Math.max(0, limits.reviewsPerDay - studyDayCounts(learner, now).reviews - study.counts.review);
+    return composeSession(study.queue, resolved.lecture, old, { currentSinceReview, maxReviews });
+  }, [study, selection.kind, resolved.lecture, curriculum, learner, now, currentSinceReview, ignoreLimits, limits]);
+
+  const current: SessionCard | null =
+    (session.length > 0 && (session.find((c) => c.item.id === revealedId) ?? session[0])) || null;
   const revealed = current !== null && revealedId === current.item.id;
+  const pendingReviews = session.filter((c) => c.origin === "review").length;
 
   const previews = useMemo(() => {
     if (!current || !revealed) return null;
@@ -139,6 +166,8 @@ export function StudySession({
         pre,
       );
       setLearner(result.learner);
+      // An inserted old review resets the cadence; a current card advances it.
+      setCurrentSinceReview((n) => (current.origin === "review" ? 0 : n + 1));
     } catch (cause) {
       // Nothing was recorded, so this showing must not stay marked as rated:
       // otherwise a legitimate rating after the card reappears is ignored.
@@ -243,17 +272,18 @@ export function StudySession({
       </p>
     ) : null;
 
-  if (study.total === 0) {
+  if (study.total === 0 && pendingReviews === 0) {
+    const lectureHref = resolved.lecture ? `/lectures/${encodeURIComponent(resolved.lecture.id)}` : "/concepts";
     return (
       <Shell title={resolved.title}>
         <div data-testid="study-empty" className="rounded-2xl border border-ink-200 bg-white p-8 text-center">
           <h1 className="text-2xl font-bold text-ink-800">No cards to study yet</h1>
           <p className="mt-3 text-ink-600">
-            Add material for this lecture and approve its cards, then come back to study.
+            Generate cards for this lecture and approve them, then come back to study.
           </p>
           <div className="mt-6 flex flex-wrap justify-center gap-3">
-            <ButtonLink href="/concepts" variant="secondary">
-              Review drafts
+            <ButtonLink href={lectureHref} variant="secondary" data-testid="study-empty-review">
+              Review cards
             </ButtonLink>
             <ButtonLink href="/" variant="secondary">
               Back to dashboard
@@ -297,10 +327,19 @@ export function StudySession({
   const document = curriculum.course.lectures
     .flatMap((l) => l.documents)
     .find((d) => d.id === concept.source.documentId);
+  const isReview = current.origin === "review";
+  const frontImage = item.image?.placement === "front" ? item.image : null;
+  const backImage = item.image?.placement === "back" ? item.image : null;
+  const pageImage = { assetId: pageAssetId(concept.source.documentId, concept.source.pageNumber), documentId: concept.source.documentId, pageNumber: concept.source.pageNumber, placement: "back" as const };
 
   return (
     <Shell title={resolved.title}>
       {counts}
+      {pendingReviews > 0 && (
+        <p data-testid="review-note" className="mt-2 text-center text-xs font-semibold uppercase tracking-wide text-ink-500">
+          {pendingReviews} {pendingReviews === 1 ? "review" : "reviews"} from earlier lectures mixed in
+        </p>
+      )}
       {limitNote}
 
       {notice && (
@@ -318,13 +357,27 @@ export function StudySession({
         data-item-id={item.id}
         data-concept-id={concept.id}
         data-queue={current.queue}
+        data-origin={current.origin}
+        data-lecture-id={current.lecture.id}
         className="mt-6 flex min-h-[22rem] flex-col rounded-2xl border border-ink-200 bg-white px-6 py-8 shadow-sm sm:px-10 sm:py-12"
       >
         <p className="text-center text-xs font-semibold uppercase tracking-[0.14em] text-ink-400">
           {KIND_LABEL[item.kind]}
+          {isReview && (
+            // The lecture is named only after the answer: its title could give the answer away.
+            <span data-testid="card-review-chip" className="ml-2 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[0.65rem] normal-case tracking-normal text-amber-800">
+              Review
+            </span>
+          )}
         </p>
+        {frontImage && (
+          <div className="mt-4">
+            <CardImage image={frontImage} alt={`Figure from page ${frontImage.pageNumber}`} testId="card-image-front" />
+          </div>
+        )}
         <div
           data-testid="card-front"
+          dir="auto"
           className="mt-4 text-center text-2xl font-semibold leading-snug text-ink-800 sm:text-[1.75rem]"
         >
           {item.prompt}
@@ -332,8 +385,18 @@ export function StudySession({
 
         {revealed && (
           <div data-testid="card-back" className="mt-8 border-t border-ink-200 pt-8">
-            <p className="text-center text-xl leading-relaxed text-ink-700">{item.explanation}</p>
+            <p dir="auto" className="whitespace-pre-line text-center text-xl leading-relaxed text-ink-700">{item.explanation}</p>
+            {backImage && (
+              <div className="mt-6">
+                <CardImage image={backImage} alt={`Figure from page ${backImage.pageNumber}`} testId="card-image-back" />
+              </div>
+            )}
             <div className="mt-8 text-center text-sm text-ink-500">
+              {isReview && (
+                <p data-testid="card-origin" className="mb-1 font-semibold text-amber-800">
+                  From {current.lecture.title}
+                </p>
+              )}
               <span data-testid="card-source">
                 {document?.title ?? concept.source.documentId} · page {concept.source.pageNumber}
               </span>
@@ -354,10 +417,14 @@ export function StudySession({
                 </summary>
                 <blockquote
                   data-testid="source-excerpt"
-                  className="mt-2 border-l-4 border-clinical-300 pl-4 text-[0.95rem] leading-relaxed text-ink-600"
+                  dir="auto"
+                  className="mt-2 whitespace-pre-line border-l-4 border-clinical-300 pl-4 text-[0.95rem] leading-relaxed text-ink-600"
                 >
                   “{concept.source.excerpt}”
                 </blockquote>
+                <div className="mt-3">
+                  <CardImage image={pageImage} alt={`Page ${concept.source.pageNumber} of ${document?.title ?? "the source"}`} size="page" testId="source-page-image" hideWhenMissing />
+                </div>
               </details>
             </div>
           </div>

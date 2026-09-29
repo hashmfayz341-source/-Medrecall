@@ -44,3 +44,6 @@ next-env.d.ts
 
 # main@482824c source materialized from git for mixed-version tests
 /.base-main-482824c*/
+
+# copied from pdfjs-dist by scripts/copy-pdf-worker.mjs
+public/pdf.worker.min.mjs

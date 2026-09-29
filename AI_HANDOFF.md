@@ -148,6 +148,39 @@ mastery).
 - **Mixed-version tests run main's real code from git** (`tests/base-main`),
   not an imitation of it.
 
+**19. The primary flow is Lecture → Flashcards → Study (AD-28).** Cards are
+generated behind `getGenerationProvider()` only (`POST /api/generate`), one
+DRAFT Concept per card, ids `${document}-p${page}-f${fact}` so a rerun is
+idempotent. Never pad to a requested count; report `shortfall`. Page images
+and figures are ORIGINAL regions of the uploaded PDF, rendered in the browser
+(`lib/visuals/browser.ts`, pdfjs *legacy* build — the current build needs
+`Map.prototype.getOrInsertComputed`, which iPad Safari and the test browser
+lack) and stored in IndexedDB (`lib/persistence/assetStore.ts`); a card
+carries only a `CardImage` reference with provenance. The worker is served
+from `public/pdf.worker.min.mjs` by `scripts/copy-pdf-worker.mjs`
+(prebuild/predev/postinstall) — bundler-emitted worker URLs did not work in
+the production build. The session composer (`lib/engine/session.ts`) orders
+what is shown; it never reads or writes a schedule, it respects the
+existing reviews-per-day allowance, and "near-due" comes from the persisted
+schedule (`isNearDue`: never a Learning/Relearning card; a Review card only
+past half its interval) — never from session memory, which a refresh loses.
+Arabic cards are rendered from the fact's structure (`lib/generation/arabic.ts`):
+noun phrases whole or as written, never word by word, and never "ما هو
+<English sentence>؟"; context-dependent words (by, within, most) only in the
+context recognised, else English — "within" is داخل only before a
+recognised place, never a guess; any remaining ordinary English (a verb
+with its object, a relative clause) makes the card `partial` — when unsure,
+partial. Never report a partial card as Arabic. An image QUESTION needs a
+caption outside a raster figure and an answer not printed inside it; a
+figure goes on a card's back only on strong evidence, and never on a card
+about another entity of the same kind (same head noun, different
+modifiers: another subtype, type or stage); shared family or anatomy words
+never attach it; the same picture (`sameImage`, ≤ 4 of 64 bits) with
+contradictory captions is used nowhere. Test generation changes on the
+unseen lecture (`scripts/make-unseen-fixture.mjs`), not only the fixtures it
+was developed on. Generation takes `documents[]`; keep each card's own
+provenance.
+
 **18. Duplicate merges are reviewer decisions in the overrides (AD-27).**
 Detection (`findDuplicateCandidates`) is textual and deterministic — never
 call a model for it, and never auto-merge. `mergeConcepts` discards the
@@ -289,7 +322,7 @@ above that interface knows where state lives.
 npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
 ```
 
-564 unit tests, 162 E2E tests (81 per project, iPad and desktop viewports). Mixed-version tests need the base commit 482824c in local git history (a normal clone has it). The E2E suite
+619 unit tests, 178 E2E tests (89 per project, iPad and desktop viewports). Mixed-version tests need the base commit 482824c in local git history (a normal clone has it). The E2E suite
 drives the real UI through the complete demo journey, including the deliberate
 ATP-depletion failure.
 

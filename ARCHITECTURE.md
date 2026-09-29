@@ -694,6 +694,121 @@ share concept mastery but not scheduling state (see AD-25). Study is not gated
 by the tutor's lecture-order lock: Anki has no such lock, and only approved
 content is studyable either way.
 
+## AD-28 — Lecture → flashcards: cards are the learner-facing object, Concepts stay underneath
+
+**Decision.** The default experience is *upload a lecture PDF → choose
+language and count → generate → review → study*. Nothing in the Concept-first
+architecture is replaced: every generated card is one DRAFT Concept with one
+RetrievalItem, enters through the same approval gate, keeps a full
+`SourceRef`, feeds the same mastery, and is scheduled by the same FSRS. The
+Tutor remains available on the demo course.
+
+- **Generation is a third provider role** (`CardGenerationProvider`,
+  `getGenerationProvider()`, `POST /api/generate`), resolved separately from
+  grading and extraction (AD-23) and behind the same hosted-provider gate
+  (AD-22). The deterministic implementation (`lib/generation/`) extracts
+  grounded facts — definitions, superlatives ("X is the most common cause of
+  Y"), mechanisms (cause given, consequence blanked), bullet lists under a
+  heading, statements as clozes, figures — scores them for medical retrieval
+  value, drops administrative slides, de-duplicates (content-word overlap,
+  and never two cards with the same question), and phrases them in the
+  requested language's scaffolding. Ids are deterministic
+  (`${document}-p${page}-f${fact}`), so *Generate more* adds only new facts
+  and existing cards keep their FSRS history. A requested count is never
+  padded: the maximum useful set is returned with a `shortfall`; AUTO keeps
+  facts at or above a score threshold.
+- **Arabic cards are rendered from the fact's structure, never wrapped**
+  (`lib/generation/arabic.ts`). A sentence is split into noun phrases and
+  the connectors between them; connectors, verbs and question words are
+  Arabic, so question AND answer are Arabic sentences. A noun phrase is
+  rendered as a whole or kept exactly as written — never word by word, which
+  would scramble Arabic word order. `ar-en` keeps medical noun phrases in
+  English; `ar` writes the ones its general lexicon knows in Arabic with the
+  English in brackets and puts adjective + noun phrases in Arabic order.
+  Templates exist for the generator's fact kinds; anything else becomes an
+  Arabic fill-in-the-blank. Words whose meaning depends on context are
+  translated only in the context recognised — "by" / "within" / "in" /
+  "for" + a duration are temporal (بحلول / خلال / لمدة): counted ("six
+  weeks", "one minute") or not ("a minute", "several hours", "a few days",
+  "days"), the number and unit in Arabic; "within" is a place (داخل) only
+  before a recognised cell, tissue, organ or anatomical space, and
+  otherwise stays English ("within normal limits"); "most" is معظم only
+  before a noun the lexicon knows; otherwise the English stays. A card is
+  `partial` when any ordinary English (function words, "of" between
+  English words, a sentence's own untranslated verb, a finite verb with
+  its object inside a kept phrase — "engulf debris" —, any English right
+  after a relative pronoun — "that engulf …" —, a kept phrase longer than
+  a term) or a sentence side with no Arabic word remains; medical terms
+  kept in English by design do not make a card partial. When unsure, the
+  card is partial. The UI counts *Fully Arabic* and *Partly English* cards and never
+  calls a partial card Arabic (`generateCards` also returns `partialIds`).
+  The source excerpt stays
+  the lecture's verbatim English; View source shows it. Full translation is
+  a hosted-generator capability behind the same boundary. Arabic text is
+  laid out with `dir="auto"`.
+- **An image question needs a visual answer the image supports.** Captions
+  and labels come from the page's positioned text (`annotateFigures`):
+  the caption is the text in a narrow band just outside the figure; labels
+  are the text inside it. Only a raster figure with a caption becomes a
+  question, answered by that caption, and not when the answer is printed
+  inside the picture. A sentence elsewhere on the slide never answers an
+  image. A labelled diagram is not a question (it shows its answer). A
+  figure illustrates the back of a text card on its own page only on strong
+  evidence, and never when the card is about a different entity of the
+  same kind: the figure's subject (the caption before "of / in / with …")
+  and labels are read as a head noun with modifiers, and a card whose topic
+  or wording has that head with a modifier the figure lacks — or lacks one
+  the figure has — is a different entity (papillary vs medullary
+  carcinoma, type I vs type II, acute vs chronic, small cell vs non-small
+  cell), whatever else they share. Otherwise the card must name the
+  subject or a label as a specific phrase, mention every specific word of
+  the subject in other words, or name a one-word subject and share a word
+  of the caption's context; family or anatomy words alone ("thyroid",
+  "carcinoma") and words common to a whole lecture ("necrosis", "injury",
+  "tissue", …) never count. A figure with no
+  caption or labels is attached to nothing. The same picture — a 64-bit
+  average hash (every pixel box-averaged into 8 × 8, so size does not
+  matter) equal or within 4 bits (`sameImage`) — keeps one question when
+  its captions agree; with contradictory captions it is neither a question
+  nor on any card's back. An image question that only repeats a text card
+  is dropped.
+- **Generation reads the lecture's documents, not "the" document.** A
+  lecture may hold several PDFs (*Add a PDF*); *Generate more* reads all of
+  them or the one chosen, de-duplicates against the whole lecture, and every
+  card keeps its own document, page, excerpt and image.
+- **Visual material is original and geometric.** Every page is rendered in
+  the browser (pdfjs legacy build) and stored in IndexedDB
+  (`medrecall.assets.v1`) with figures cropped from it; figures are found
+  from operator lists (`lib/visuals/analyze.ts`): raster images large enough
+  to look at, vector diagrams (path density and bounds), whole-page images;
+  logos and repeated template images (same place and size on several pages),
+  icons, rules and pixel placeholders are rejected. A card stores only a
+  `CardImage` reference (asset id, document, page, region, placement);
+  malformed references are dropped record-locally like every other stored
+  field. No image is ever synthesised. Reset clears the asset store.
+- **The session composer orders; FSRS schedules** (`lib/engine/session.ts`).
+  While studying one lecture, cards of other lectures that are overdue (due
+  more than a day ago), due, or near due (within 24 h) are inserted about
+  one after every four current cards, most urgent first, each at most once;
+  when the current queue is exhausted the owed overdue/due reviews follow
+  (near-due ones do not). The composer never reads or writes a due date;
+  rating an inserted card is the ordinary `recordCardRating` on its own
+  concept, so ownership, provenance and history are unchanged. New cards are
+  never inserted (FSRS has no memory of them), nor suspended or buried ones.
+  Inserted REVIEW-queue cards draw on the existing *reviews per day*
+  allowance — what today's reviews and the lecture's own shown reviews
+  leave — most urgent first; learning cards are never limited, as in any
+  queue. "Near-due" is read from the card's persisted FSRS schedule only
+  (`isNearDue`), so a refresh or another tab computes the same thing: a
+  Learning / Relearning card (Again) is never near-due — it returns exactly
+  when its step is due — and a Review card is near-due only when it is due
+  within the horizon AND at least half its interval has passed, so a card
+  just rated Hard / Good / Easy (FSRS's shortest review interval is the
+  horizon's length, a day) is not re-inserted early.
+- **One commit per upload.** The lecture, its document, chunks, figure
+  metadata, cards and language are stored in a single `commitOverrides`
+  mutation, so an interrupted upload leaves nothing half-made.
+
 ## AD-27 — Duplicate candidates across documents: suggested, merged by a reviewer
 
 **Decision.** Extraction de-duplicates by title within one document only;

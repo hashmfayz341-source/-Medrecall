@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import {
+  addGeneratedConcepts,
   addIngestedDocument,
   addLecture,
   applyOverrides,
@@ -19,6 +20,8 @@ import {
   hasLegacyDocumentIdentity,
   keepApart,
   mergeConcepts,
+  renameLecture,
+  setLectureLanguage,
   unmergeConcept,
   setConceptStatus,
   setConceptStatuses,
@@ -27,6 +30,7 @@ import {
   type CurriculumOverrides,
   type IngestedDocument,
 } from "@/lib/domain/curriculum";
+import { clearAssets, forgetAssetUrls } from "@/lib/persistence/assetStore";
 import { pathologyCurriculum } from "@/lib/content/pathology";
 import { createLearnerState } from "@/lib/engine/tutor";
 import {
@@ -37,11 +41,13 @@ import {
 import { acceptIncomingLearnerState } from "@/lib/domain/quarantine";
 import { LocalStorageCurriculumRepository, CURRICULUM_STORAGE_KEY, commitOverrides } from "@/lib/persistence/curriculumStore";
 import type {
+  CardLanguage,
   Concept,
   ConceptStatus,
   Curriculum,
   LearnerState,
   Lecture,
+  LectureSettings,
 } from "@/lib/domain/types";
 
 interface LearnerContextValue {
@@ -78,6 +84,26 @@ interface LearnerContextValue {
     ingested: IngestedDocument,
     concepts: readonly Concept[],
   ) => void;
+  /**
+   * The lecture-first upload: one commit that creates the lecture (if new),
+   * stores the document with its chunks and generated DRAFT cards, and
+   * records the card language — so a reload mid-way never leaves an empty
+   * lecture behind.
+   */
+  storeLectureUpload: (input: {
+    lecture: Lecture;
+    ingested: IngestedDocument;
+    concepts: readonly Concept[];
+    language: CardLanguage;
+  }) => void;
+  /** Append newly generated DRAFT cards to the lecture documents they came from ("Generate more"). */
+  appendGeneratedConcepts: (documentIds: readonly string[], concepts: readonly Concept[]) => void;
+  renameUserLecture: (lectureId: string, title: string) => void;
+  setLectureCardLanguage: (lectureId: string, language: CardLanguage) => void;
+  /** Per-lecture generation settings (language). */
+  lectureSettings: Record<string, LectureSettings>;
+  /** The stored upload records (document, chunks, figure metadata), for Generate more. */
+  ingested: IngestedDocument[];
   resetAll: () => void;
 }
 
@@ -303,11 +329,42 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
     [mutate],
   );
 
+  const storeLectureUpload = useCallback(
+    (input: { lecture: Lecture; ingested: IngestedDocument; concepts: readonly Concept[]; language: CardLanguage }) =>
+      mutate((current) =>
+        setLectureLanguage(
+          addIngestedDocument(addLecture(current, input.lecture), input.ingested, input.concepts),
+          input.lecture.id,
+          input.language,
+        ),
+      ),
+    [mutate],
+  );
+
+  const appendGeneratedConcepts = useCallback(
+    (documentIds: readonly string[], concepts: readonly Concept[]) =>
+      mutate((current) => addGeneratedConcepts(current, documentIds, concepts)),
+    [mutate],
+  );
+
+  const renameUserLecture = useCallback(
+    (lectureId: string, title: string) => mutate((current) => renameLecture(current, lectureId, title)),
+    [mutate],
+  );
+
+  const setLectureCardLanguage = useCallback(
+    (lectureId: string, language: CardLanguage) => mutate((current) => setLectureLanguage(current, lectureId, language)),
+    [mutate],
+  );
+
   const resetAll = useCallback(() => {
     const fresh = createLearnerState();
     lastSaveFailed.current = false;
     learnerRepo.current.clear();
     curriculumRepo.current.clear();
+    // Page images belong to the uploaded documents that were just removed.
+    forgetAssetUrls();
+    void clearAssets();
     setLearnerState(fresh);
     const freshOverrides = createOverrides();
     overridesRef.current = freshOverrides;
@@ -338,6 +395,12 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
       keptApart: overrides.keptApart,
       createLecture,
       storeIngestedDocument,
+      storeLectureUpload,
+      appendGeneratedConcepts,
+      renameUserLecture,
+      setLectureCardLanguage,
+      lectureSettings: overrides.lectureSettings,
+      ingested: overrides.ingested,
       resetAll,
     }),
     [
@@ -357,6 +420,12 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
       overrides.keptApart,
       createLecture,
       storeIngestedDocument,
+      storeLectureUpload,
+      appendGeneratedConcepts,
+      renameUserLecture,
+      setLectureCardLanguage,
+      overrides.lectureSettings,
+      overrides.ingested,
       resetAll,
     ],
   );

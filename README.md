@@ -1,5 +1,16 @@
 # MedRecall
 
+**Your lecture, as flashcards.** Upload a lecture PDF, choose the card
+language and how many cards you want, and MedRecall generates cards from what
+the lecture actually says — figures from the PDF included — for you to
+review and study Anki-style:
+
+```
+Upload Cell Injury.pdf → language (English / Arabic / Arabic + English terms) → 40 cards
+   → review / edit / approve → Study: front → Show Answer → Again / Hard / Good / Easy
+   → FSRS schedules the next review → older due cards come back inside later lectures
+```
+
 **Anki-first study, concept-aware underneath.** Learners study cards the way an
 Anki user expects:
 
@@ -52,6 +63,69 @@ weakness — only a later spaced or interleaved success does. This is the rule
 most learning apps get wrong, and it is enforced in
 `src/lib/domain/mastery.ts`.
 
+## Lecture → flashcards (the primary flow)
+
+1. **Upload lecture** (`/upload`): pick the PDF. The file name becomes the
+   lecture title ("Cell Injury.pdf" → *Cell Injury*); edit it if you like.
+2. **Cards**: choose the language — English, Arabic, or Arabic with English
+   medical terminology — and the number: 20 / 40 / 60 / 100 / Custom / Auto.
+   Auto covers the important material once. A number is met only when the
+   lecture supports it; facts are never repeated to reach a count, and the
+   screen says how many distinct cards were possible.
+3. **Generate**: the text is read page by page (server-side), every page is
+   rendered and its figures cropped (in your browser — images never leave the
+   device), then cards are generated: definitions, mechanisms with the
+   consequence blanked, "what is the most common cause of …", bullet lists,
+   clozes, and **image cards** on an original figure whose caption says what
+   it shows ("What is shown in this image?" → "Steatosis of hepatocytes").
+   Every card cites its page; View source shows the excerpt and the page
+   image.
+4. **Review cards** (`/lectures/<id>`): approve, edit front/back, discard;
+   **Approve all** for speed. Cards are drafts until approved.
+5. **Study** (`/study/<id>`), and later **Generate more cards** — from all
+   of the lecture's PDFs or one of them (**Add a PDF** puts another deck or
+   chapter into the same lecture): only new facts are added, each card keeps
+   its own PDF and page, and existing cards keep their FSRS history.
+
+**Images are used only where they help, and never invented.** A photograph,
+micrograph or scan becomes an image *question* only when its caption (the
+text just outside it) says what it shows, and that answer is not printed
+inside the picture. A labelled diagram shows its own answer, so it is used
+on the *back* of the text cards it is about instead. A figure with no
+caption or labels is not attached to anything, and a figure goes on the back
+of a card only when the card names what the figure shows (a word shared by
+the whole lecture, like "necrosis", is not enough). The same picture on two
+slides — even drawn at different sizes — never gets two different answers.
+Logos, repeated branding, icons and rules are rejected.
+
+**Languages.** *English* cards are the lecture's own sentences. *Arabic +
+English medical terms* writes Arabic questions and answers around English
+medical terminology ("ما هو السبب الأكثر شيوعًا لـ cell injury؟" →
+"Hypoxia هو السبب الأكثر شيوعًا لـ cell injury."). *Arabic* additionally
+writes the medical terms MedRecall's built-in vocabulary knows in Arabic
+with the English in brackets ("نقص الأكسجة (Hypoxia) هو السبب الأكثر شيوعًا
+لـ إصابة الخلية (cell injury)."). The built-in generator renders the common
+sentence patterns (most common cause, defined as, caused by, leads to,
+results in, characterized by, first manifestation, increased/decreased,
+sequences, lists) and keeps time expressions right ("by six weeks" →
+"بحلول 6 أسابيع", "within 12 hours" → "خلال 12 ساعة"). Where it cannot
+translate part of a sentence safely it keeps the lecture's English rather
+than guess, and the result screen counts those cards as *Partly English* —
+never as Arabic. Full translation of
+every sentence needs a configured generation provider (a later, separately
+safeguarded step).
+
+**Old memories while studying a new lecture.** While you study Inflammation,
+Cell Injury cards that FSRS says are overdue, due, or due within the next day
+are mixed in — about one after every four Inflammation cards, within
+today's *reviews per day* limit. A card you rate comes back only when FSRS
+makes it due again (Again's relearning step), never earlier — also after a
+refresh. They show a
+neutral *Review* chip before the answer and their lecture and page after it,
+and rating them updates their own FSRS history; they never join the new
+lecture. FSRS decides *when* a card is due; the session composer only
+decides *what appears next*.
+
 ## Studying (Anki-style)
 
 Open a lecture's **Study** button on the dashboard (`/study/<lectureId>`):
@@ -99,6 +173,10 @@ available.
   which cards.
 
 ## Status
+
+**Lecture → flashcards.** Implemented, in review. The primary flow above:
+upload, language and count, generation with figures from the PDF, card
+review, Anki-style Study, cross-lecture due/near-due reviews, lecture library.
 
 **V1 released.** The complete loop — upload a PDF, review and approve its
 concepts (merging duplicates across documents), learn with the Tutor, study
@@ -155,9 +233,9 @@ Verification:
 ```bash
 npm run lint
 npm run typecheck
-npm run test         # 176 unit tests
+npm run test         # 656 unit tests
 npm run build
-npm run e2e          # 42 Playwright tests, iPad + desktop viewports
+npm run e2e          # 184 Playwright tests, iPad + desktop viewports
 ```
 
 `npm run verify` chains lint, typecheck, unit tests and the production build.
@@ -200,7 +278,9 @@ test without rendering anything.
 
 ## Uploading your own material
 
-Go to **Add material**, pick a lecture (or create one), and upload a PDF.
+**Upload lecture** on the home screen is the normal way (see above). The
+older **Add material** screen (`/ingest`) still adds a PDF to an existing
+lecture, including the demo course, for the guided Tutor: pick a lecture (or create one), and upload a PDF.
 MedRecall extracts the text page by page and proposes candidates. Review them
 under **Concept review**: edit the wording, approve what is right, discard what
 is not. Editing a draft does *not* approve it — those stay separate decisions.
@@ -212,7 +292,9 @@ milestone.
 Regenerate the test fixtures with:
 
 ```bash
-node scripts/make-fixture-pdf.mjs
+node scripts/make-fixture-pdf.mjs        # the small ingestion fixtures
+node scripts/make-lecture-fixtures.mjs   # Cell Injury.pdf and Inflammation.pdf, with figures
+node scripts/make-unseen-fixture.mjs     # the unseen lecture used by the merge-gate regression tests
 ```
 
 ## Documentation
