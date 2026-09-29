@@ -233,7 +233,7 @@ Verification:
 ```bash
 npm run lint
 npm run typecheck
-npm run test         # 643 unit tests
+npm run test         # 656 unit tests
 npm run build
 npm run e2e          # 184 Playwright tests, iPad + desktop viewports
 ```

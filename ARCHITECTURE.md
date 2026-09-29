@@ -728,14 +728,19 @@ Tutor remains available on the demo course.
   Templates exist for the generator's fact kinds; anything else becomes an
   Arabic fill-in-the-blank. Words whose meaning depends on context are
   translated only in the context recognised — "by" / "within" / "in" /
-  "for" + a counted duration are temporal (بحلول / خلال / لمدة, the number
-  and unit in Arabic), "within" + anything else is a place (داخل), "most" is
-  معظم only before a noun the lexicon knows; otherwise the English stays.
-  A card is `partial` when any ordinary English (function words, verbs,
-  "of" between English words, a sentence's own untranslated verb, a kept
-  phrase longer than a term) or a sentence side with no Arabic word
-  remains; medical terms kept in English by design do not make a card
-  partial. The UI counts *Fully Arabic* and *Partly English* cards and never
+  "for" + a duration are temporal (بحلول / خلال / لمدة): counted ("six
+  weeks", "one minute") or not ("a minute", "several hours", "a few days",
+  "days"), the number and unit in Arabic; "within" is a place (داخل) only
+  before a recognised cell, tissue, organ or anatomical space, and
+  otherwise stays English ("within normal limits"); "most" is معظم only
+  before a noun the lexicon knows; otherwise the English stays. A card is
+  `partial` when any ordinary English (function words, "of" between
+  English words, a sentence's own untranslated verb, a finite verb with
+  its object inside a kept phrase — "engulf debris" —, any English right
+  after a relative pronoun — "that engulf …" —, a kept phrase longer than
+  a term) or a sentence side with no Arabic word remains; medical terms
+  kept in English by design do not make a card partial. When unsure, the
+  card is partial. The UI counts *Fully Arabic* and *Partly English* cards and never
   calls a partial card Arabic (`generateCards` also returns `partialIds`).
   The source excerpt stays
   the lecture's verbatim English; View source shows it. Full translation is
@@ -749,10 +754,18 @@ Tutor remains available on the demo course.
   inside the picture. A sentence elsewhere on the slide never answers an
   image. A labelled diagram is not a question (it shows its answer). A
   figure illustrates the back of a text card on its own page only on strong
-  evidence: the card names the figure's subject (the caption before "of /
-  in / with …") or one of its labels as a specific phrase, or shares at
-  least two specific words with it; words common to a whole pathology
-  lecture ("necrosis", "injury", "tissue", …) never count. A figure with no
+  evidence, and never when the card is about a different entity of the
+  same kind: the figure's subject (the caption before "of / in / with …")
+  and labels are read as a head noun with modifiers, and a card whose topic
+  or wording has that head with a modifier the figure lacks — or lacks one
+  the figure has — is a different entity (papillary vs medullary
+  carcinoma, type I vs type II, acute vs chronic, small cell vs non-small
+  cell), whatever else they share. Otherwise the card must name the
+  subject or a label as a specific phrase, mention every specific word of
+  the subject in other words, or name a one-word subject and share a word
+  of the caption's context; family or anatomy words alone ("thyroid",
+  "carcinoma") and words common to a whole lecture ("necrosis", "injury",
+  "tissue", …) never count. A figure with no
   caption or labels is attached to nothing. The same picture — a 64-bit
   average hash (every pixel box-averaged into 8 × 8, so size does not
   matter) equal or within 4 bits (`sameImage`) — keeps one question when

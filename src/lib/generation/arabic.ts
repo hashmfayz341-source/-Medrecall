@@ -136,8 +136,44 @@ const TEMPORAL: Record<string, string> = {
   by: "بحلول", within: "خلال", in: "خلال", for: "لمدة", after: "بعد", before: "قبل", during: "خلال", at: "عند", on: "في",
   "up to": "حتى", over: "على مدى",
 };
-/** Non-temporal readings that are safe everywhere else. "by" has none: its English stays. */
-const PLACE: Record<string, string> = { within: "داخل" };
+/*
+ * "within" + a place is spatial (داخل) — but only when the place is
+ * recognised: a cell, a tissue, an organ or another anatomical space.
+ * "within normal limits", "within the reference range": neither a counted
+ * duration nor a known place, so "within" stays English and the card is
+ * partial. A wrong meaning is worse than an untranslated word.
+ */
+const PLACE_NOUNS = new Set([
+  "cell", "cells", "cytoplasm", "cytosol", "nucleus", "nuclei", "nucleolus", "membrane", "membranes", "mitochondria",
+  "mitochondrion", "lysosome", "lysosomes", "vesicle", "vesicles", "granule", "granules", "vacuole", "vacuoles", "organelle",
+  "organelles", "canaliculus", "canaliculi", "tubule", "tubules", "duct", "ducts", "ductule", "ductules", "vessel", "vessels",
+  "artery", "arteries", "arteriole", "arterioles", "vein", "veins", "venule", "venules", "capillary", "capillaries", "sinusoid",
+  "sinusoids", "alveolus", "alveoli", "airway", "airways", "bronchus", "bronchi", "bronchiole", "bronchioles", "glomerulus",
+  "glomeruli", "lumen", "lumina", "wall", "walls", "cavity", "cavities", "space", "spaces", "interstitium", "stroma",
+  "parenchyma", "lobule", "lobules", "follicle", "follicles", "gland", "glands", "crypt", "crypts", "villus", "villi",
+  "epithelium", "endothelium", "mucosa", "submucosa", "serosa", "matrix", "compartment", "compartments", "chamber", "chambers",
+  "ventricle", "ventricles", "atrium", "atria", "heart", "liver", "kidney", "kidneys", "lung", "lungs", "brain", "skin", "bone",
+  "bones", "marrow", "spleen", "node", "nodes", "plaque", "plaques", "thrombus", "thrombi", "tumour", "tumor", "tumours",
+  "tumors", "lesion", "lesions", "organ", "organs", "tissue", "tissues", "abdomen", "thorax", "chest", "pelvis", "cortex",
+  "medulla", "capsule", "sac", "cyst", "cysts", "abscess", "granuloma", "granulomas", "infarct", "focus", "foci", "zone",
+  "zones", "layer", "layers", "sheath", "neuron", "neurons", "axon", "axons", "myocardium", "pericardium", "pleura",
+  "peritoneum", "lymphatics",
+]);
+/** Cell types are places too: "within hepatocytes", "within macrophages". */
+const CELL_TYPE = /(cytes?|blasts?|phages?)$/;
+
+/** Whether the words after "within" (index `start`) name a recognised place: its head noun, before "of" / a connector / punctuation. */
+function placeAhead(lows: readonly string[], start: number): boolean {
+  let i = start;
+  while (ARTICLES.has(lows[i] ?? "")) i++;
+  let head: string | null = null;
+  for (; i < lows.length; i++) {
+    const w = lows[i]!;
+    if (w === "\u0000" || w === "of" || (head !== null && longest(CONNECTORS, lows, i, 4))) break;
+    head = w;
+  }
+  return head !== null && (PLACE_NOUNS.has(head) || CELL_TYPE.test(head));
+}
 
 const NUMBER_WORDS: Record<string, number> = {
   one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
@@ -164,7 +200,7 @@ function unitOf(word: string | undefined): [string, string, string, string, bool
 }
 
 /** A counted duration: "one minute", "six to eight weeks", "about 24 hours", "the first three days". */
-function timePhrase(lows: readonly string[], start: number): { ar: string; len: number } | null {
+function timePhrase(lows: readonly string[], start: number, afterPreposition = false): { ar: string; len: number } | null {
   let i = start;
   let lead = "";
   if (lows[i] === "the" && (lows[i + 1] === "first" || lows[i + 1] === "last")) {
@@ -173,6 +209,20 @@ function timePhrase(lows: readonly string[], start: number): { ar: string; len: 
   }
   const approx = APPROXIMATELY[lows[i] ?? ""];
   if (approx) i++;
+  const prefix = `${lead}${approx ? `${approx} ` : ""}`;
+  // Uncounted durations: "several minutes", "a few hours", and — after a
+  // temporal preposition — "a minute", "an hour", "days".
+  const pluralUnit = (w: string | undefined) => (w && /s$/.test(w) && !TIME_UNITS[w] ? unitOf(w) : null);
+  if (lows[i] === "several" && pluralUnit(lows[i + 1])) return { ar: `${prefix}عدة ${pluralUnit(lows[i + 1])![2]}`, len: i + 2 - start };
+  if (lows[i] === "a" && lows[i + 1] === "few" && pluralUnit(lows[i + 2])) {
+    const unit = pluralUnit(lows[i + 2])!;
+    return { ar: `${prefix}${unit[4] ? "بضع" : "بضعة"} ${unit[2]}`, len: i + 3 - start };
+  }
+  // ("a second" is left alone: it is as often an ordinal — "a second attack".)
+  if (afterPreposition && (lows[i] === "a" || lows[i] === "an") && TIME_UNITS[lows[i + 1] ?? ""] && lows[i + 1] !== "second") {
+    return { ar: `${prefix}${TIME_UNITS[lows[i + 1]!]![0]}`, len: i + 2 - start };
+  }
+  if (afterPreposition && !lead && !approx && pluralUnit(lows[i])) return { ar: pluralUnit(lows[i])![2], len: i + 1 - start };
   const from = numberOf(lows[i]);
   if (from === null) return null;
   i++;
@@ -221,6 +271,50 @@ const ORDINARY_ENGLISH = new Set([
 /** A kept English noun phrase longer than this is a clause, not a term. */
 const MAX_TERM_WORDS = 4;
 
+/*
+ * Common English verbs of medical and biological prose (general English,
+ * not any lecture's wording). Their finite forms — "engulf", "secretes" —
+ * are verbs when an object follows them inside a kept English phrase
+ * ("engulf debris", "secrete cytokines"): an English clause, so partial.
+ * Words used just as often as the first word of a medical term — nouns
+ * ("signal transduction", "transport protein", "lead poisoning", "repair
+ * enzymes") and adjectives ("diffuse fibrosis", "clear cell carcinoma",
+ * "mature teratoma", "lower lobe", "cross section") — are left out; the
+ * sentence-level rules still catch them as verbs (after a relative
+ * pronoun, or as the sentence's own verb).
+ */
+const ENGLISH_VERBS = [
+  "absorb", "accumulate", "activate", "adhere", "affect", "aggregate", "alter", "appear", "arise", "attach", "attract", "bind",
+  "calcify", "carry", "cause", "circulate", "cleave", "compress", "consist", "contain", "contribute",
+  "convert", "correlate", "decrease", "degrade", "deliver", "depend", "derive", "destroy", "detect", "develop", "differ",
+  "differentiate", "digest", "dilate", "disappear", "disrupt", "divide", "elevate", "eliminate", "encode", "engulf",
+  "enhance", "enter", "excrete", "expand", "extend", "follow", "form", "generate", "grow", "heal", "hydrolyze",
+  "impair", "improve", "include", "increase", "indicate", "induce", "infiltrate", "inhibit", "initiate", "injure", "interact",
+  "invade", "involve", "kill", "lose", "lyse", "maintain", "make", "mediate", "metabolize", "migrate",
+  "modulate", "obstruct", "occlude", "occur", "originate", "penetrate", "permit", "persist", "phagocytose",
+  "precede", "predispose", "prevent", "produce", "proliferate", "promote", "protect", "provide", "raise", "reach",
+  "react", "recruit", "reduce", "reflect", "regenerate", "regulate", "remain", "remove", "replace", "represent", "require",
+  "resemble", "resist", "resolve", "respond", "restore", "reveal", "rise", "secrete", "show", "shrink", "stimulate",
+  "suppress", "surround", "survive", "sustain", "swell", "synthesize", "thicken", "undergo", "vary", "weaken", "worsen",
+];
+const FINITE_VERBS = new Set(
+  ENGLISH_VERBS.flatMap((v) => [v, /(s|sh|ch|x|z)$/.test(v) ? `${v}es` : /[^aeiou]y$/.test(v) ? `${v.slice(0, -1)}ies` : `${v}s`]),
+);
+/** Relative pronouns: what follows them is a clause (its verb first), never a term. */
+const RELATIVE = new Set(["which", "that", "who", "whom", "whose"]);
+
+/**
+ * Whether a (lower-case) English word is sentence structure rather than
+ * part of a name: a connector or function word, ordinary English, or a form
+ * of a common verb ("causes", "producing", "engulfed"). Used to find where
+ * the modifiers of a named entity end ("causes | failure").
+ */
+export function isStructureWord(word: string): boolean {
+  if (CONNECTORS[word] !== undefined || ORDINARY_ENGLISH.has(word) || FINITE_VERBS.has(word)) return true;
+  const lemma = word.replace(/(?:ed|ing)$/, "");
+  return lemma !== word && (FINITE_VERBS.has(lemma) || FINITE_VERBS.has(`${lemma}e`) || FINITE_VERBS.has(lemma.replace(/(.)\1$/, "$1")));
+}
+
 /** Whether English words kept as written read as sentence structure rather than a medical term. */
 function ordinaryEnglish(words: readonly string[]): boolean {
   if (words.length > MAX_TERM_WORDS) return true;
@@ -230,6 +324,8 @@ function ordinaryEnglish(words: readonly string[]): boolean {
     if (/^[A-Z]$/.test(word) || /^[IVX]+$/.test(word)) return false;
     const w = word.toLowerCase();
     if (ORDINARY_ENGLISH.has(w) || (/ly$/.test(w) && w.length > 4)) return true;
+    // "engulf debris": a finite verb with its object after it.
+    if (FINITE_VERBS.has(w) && i < words.length - 1) return true;
     // "tissue replaces necrotic": a verb between two words of the phrase.
     return i > 0 && i < words.length - 1 && /[^s]s$/.test(w) && !/(is|us|ss|ys)$/.test(w) && !keepsLatin(word);
   });
@@ -387,13 +483,17 @@ export function renderPhrase(source: string, mode: ArabicMode): RenderedPhrase {
   const words = () => tokens.map((t) => (t.kind === "word" ? t.low : "\u0000"));
   const lows = words();
 
+  // After a relative pronoun ("that engulf debris") comes a clause: English
+  // kept there is sentence structure, never a term.
+  let clauseSlot = false;
   const flushChunk = (raws: string[]) => {
     const chunk = renderChunk(raws, mode);
     if (!chunk) return;
     out.push(chunk.text);
-    partial ||= chunk.clause;
+    partial ||= chunk.clause || (clauseSlot && !chunk.arabic);
     hasArabic ||= chunk.arabic;
     previous = chunk;
+    clauseSlot = false;
   };
 
   while (i < tokens.length) {
@@ -425,7 +525,7 @@ export function renderPhrase(source: string, mode: ArabicMode): RenderedPhrase {
     }
     // A counted duration, with its temporal preposition when it has one.
     const preposition = longest(TEMPORAL, lows, i, 2);
-    const time = timePhrase(lows, i + (preposition?.len ?? 0));
+    const time = timePhrase(lows, i + (preposition?.len ?? 0), preposition !== null);
     if (time) {
       out.push(preposition ? `${preposition.ar} ${time.ar}` : time.ar);
       hasArabic = true;
@@ -433,9 +533,15 @@ export function renderPhrase(source: string, mode: ArabicMode): RenderedPhrase {
       i += (preposition?.len ?? 0) + time.len;
       continue;
     }
-    if (PLACE[token.low]) {
-      out.push(PLACE[token.low]!);
-      hasArabic = true;
+    if (token.low === "within") {
+      // Not a duration: داخل only before a recognised place; otherwise English, partial.
+      if (placeAhead(lows, i + 1)) {
+        out.push("داخل");
+        hasArabic = true;
+      } else {
+        out.push(token.raw);
+        partial = true;
+      }
       previous = null;
       i++;
       continue;
@@ -461,6 +567,7 @@ export function renderPhrase(source: string, mode: ArabicMode): RenderedPhrase {
       out.push(connector.ar);
       hasArabic = true;
       previous = null;
+      clauseSlot = connector.len === 1 && RELATIVE.has(token.low);
       i += connector.len;
       continue;
     }
@@ -476,7 +583,7 @@ export function renderPhrase(source: string, mode: ArabicMode): RenderedPhrase {
       if (t.kind !== "word") break;
       if (t.low === "of") break;
       const isNoun = NOUN_BEFORE_OF.has(t.low) && lows[i + 1] === "of";
-      if (raws.length > 0 && !isNoun && (longest(CONNECTORS, lows, i, 4) || PLACE[t.low] || t.low === "by" || timeAhead(lows, i))) break;
+      if (raws.length > 0 && !isNoun && (longest(CONNECTORS, lows, i, 4) || t.low === "within" || t.low === "by" || timeAhead(lows, i))) break;
       if (keepsLatin(t.raw) && raws.length === 0 && GENERAL[t.low] === undefined) {
         raws.push(t.raw);
         i++;
@@ -494,7 +601,7 @@ export function renderPhrase(source: string, mode: ArabicMode): RenderedPhrase {
 /** Whether a counted duration starts here (with or without its preposition). */
 function timeAhead(lows: readonly string[], i: number): boolean {
   const preposition = longest(TEMPORAL, lows, i, 2);
-  return timePhrase(lows, i + (preposition?.len ?? 0)) !== null;
+  return timePhrase(lows, i + (preposition?.len ?? 0), preposition !== null) !== null;
 }
 
 const coverage = (...parts: RenderedPhrase[]): Coverage => (parts.some((p) => p.partial) ? "partial" : "arabic");

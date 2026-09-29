@@ -167,12 +167,15 @@ past half its interval) — never from session memory, which a refresh loses.
 Arabic cards are rendered from the fact's structure (`lib/generation/arabic.ts`):
 noun phrases whole or as written, never word by word, and never "ما هو
 <English sentence>؟"; context-dependent words (by, within, most) only in the
-context recognised, else English; any remaining ordinary English makes the
-card `partial` — when unsure, partial. Never report a partial card as
-Arabic. An image QUESTION needs a caption outside a raster figure and an
-answer not printed inside it; a figure goes on a card's back only on strong
-evidence (named subject/label phrase, or two specific shared words — never
-one generic word); the same picture (`sameImage`, ≤ 4 of 64 bits) with
+context recognised, else English — "within" is داخل only before a
+recognised place, never a guess; any remaining ordinary English (a verb
+with its object, a relative clause) makes the card `partial` — when unsure,
+partial. Never report a partial card as Arabic. An image QUESTION needs a
+caption outside a raster figure and an answer not printed inside it; a
+figure goes on a card's back only on strong evidence, and never on a card
+about another entity of the same kind (same head noun, different
+modifiers: another subtype, type or stage); shared family or anatomy words
+never attach it; the same picture (`sameImage`, ≤ 4 of 64 bits) with
 contradictory captions is used nowhere. Test generation changes on the
 unseen lecture (`scripts/make-unseen-fixture.mjs`), not only the fixtures it
 was developed on. Generation takes `documents[]`; keep each card's own

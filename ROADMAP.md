@@ -60,6 +60,11 @@ the internal layer and the Tutor remains a separate feature.
       persisted FSRS state (Again returns only when its step is due, also
       after a refresh); the lecture header wraps its actions below long
       titles
+- [x] Last three merge-gate fixes: English relative clauses and verbs with
+      objects make an Arabic card *Partly English*; "within" + an uncounted
+      duration ("several minutes", "a minute") is temporal, داخل only
+      before a recognised place, otherwise English; an image is never
+      attached to a card about another subtype of the same entity
 - [ ] Not in this step: full translation of every sentence (needs a hosted
       generator behind Stage B abuse control), OCR, figure understanding
       beyond captions and labels

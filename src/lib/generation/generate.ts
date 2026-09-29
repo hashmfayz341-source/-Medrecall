@@ -1,8 +1,8 @@
 import { normalize } from "@/lib/domain/text";
-import { contentWords } from "@/lib/domain/duplicates";
 import type { CardImage, CardLanguage, Concept, ConceptImportance, RetrievalItem, RetrievalKind, SourceDocument } from "@/lib/domain/types";
 import { captionKey, captionTarget, figureAssetId, sameImage, type PageVisuals } from "@/lib/visuals/analyze";
 import {
+  isStructureWord,
   renderCloze,
   renderDefinition,
   renderFigure,
@@ -233,39 +233,144 @@ const SUBJECT_END = /\s+(?:of|in|with|showing|from|at|on|after|during|within|fol
 
 interface PageFigure {
   image: CardImage;
-  /** Phrases that name what the figure is: the caption's subject, and each label. */
-  phrases: string[];
-  /** Specific (non-generic) content words of the caption and labels. */
-  words: Set<string>;
+  /** What the figure is: the caption's subject, and each label — as phrases and as named entities. */
+  names: { phrase: string; entity: Entity | null }[];
+  /** The caption subject's specific words (stemmed), for a reworded mention ("carcinoma of papillary type"). */
+  subjectWords: string[];
+  /** Specific words of the rest of the caption ("… in rapidly progressive glomerulonephritis"). */
+  contextWords: Set<string>;
 }
 
+/*
+ * A named entity: the head noun of a phrase and its modifiers — "papillary
+ * thyroid carcinoma" is a carcinoma with modifiers {papillary, thyroid};
+ * "type I hypersensitivity" a hypersensitivity with {type, i}. Two phrases
+ * with the same head are the same thing only when their modifiers agree:
+ * papillary vs medullary, acute vs chronic, small cell vs non-small cell,
+ * type I vs type II, proximal vs distal are different entities.
+ */
+interface Entity {
+  head: string;
+  modifiers: string[];
+}
+
+const FUNCTION_WORDS = new Set(["the", "a", "an", "of", "in", "with", "from", "to", "at", "on", "and", "or", "for", "by", "showing", "after", "during", "within", "following", "versus", "vs"]);
+/** A label after the head: "hepatitis B", "type II", "stage 3", "grade 2a". */
+const LABEL_TOKEN = /^([a-z]|[ivx]+|\d+[a-z]?)$/;
+/** Plural-insensitive comparison: "crescents" / "crescent", "deposits" / "deposit". */
+const stem = (w: string) => (w.length > 4 && /s$/.test(w) && !/(ss|is|us)$/.test(w) ? w.slice(0, -1) : w);
+const wordsOf = (text: string) => normalize(text.replace(/\([^)]*\)/g, " ")).split(" ").filter(Boolean);
+
+function entityOf(phrase: string): Entity | null {
+  const words = wordsOf(phrase);
+  while (words.length > 0 && FUNCTION_WORDS.has(words[0]!)) words.shift();
+  // A relation ("from ATP depletion to cellular swelling") is not one named thing.
+  if (words.length === 0 || words.some((w) => FUNCTION_WORDS.has(w))) return null;
+  let h = words.length - 1;
+  while (h > 0 && LABEL_TOKEN.test(words[h]!)) h--;
+  return { head: stem(words[h]!), modifiers: words.filter((w, i) => i !== h && !FUNCTION_WORDS.has(w)).map(stem) };
+}
+
+/** A specific word: not generic, not a function word, at least three letters (labels like "B" are compared as modifiers). */
+const specific = (w: string) => w.length >= 3 && !GENERIC.has(w) && !FUNCTION_WORDS.has(w);
+
+/**
+ * A participle clause after the subject also ends it: "type I pneumocytes |
+ * lining an alveolus" (an -ing word followed by a determiner — not
+ * "hepatocyte ballooning", where the -ing word is part of the name).
+ */
+const PARTICIPLE_END = /\s+(?=[a-z]{3,}ing\s+(?:a|an|the|its|their)\s)/i;
+
 function pageFigure(image: CardImage, caption: string | undefined, labels: readonly string[]): PageFigure | null {
-  const subject = caption ? captionTarget(caption).split(SUBJECT_END)[0]!.trim() : "";
-  const phrases = [subject, ...labels].map((p) => normalize(p)).filter((p) => p.length > 0);
-  const words = new Set([...contentWords([caption ? captionTarget(caption) : "", ...labels].join(" "))].filter((w) => !GENERIC.has(w)));
-  return phrases.length === 0 && words.size === 0 ? null : { image, phrases, words };
+  const target = caption ? captionTarget(caption) : "";
+  const [clause = "", ...after] = target.split(SUBJECT_END);
+  const [subject = "", ...participle] = clause.split(PARTICIPLE_END);
+  const rest = [...participle, ...after];
+  const names = [subject, ...labels]
+    .map((p) => normalize(p.replace(/\([^)]*\)/g, " ")))
+    .filter((p) => p.length > 0)
+    .map((phrase) => ({ phrase, entity: entityOf(phrase) }));
+  const subjectWords = wordsOf(subject).filter(specific).map(stem);
+  const contextWords = new Set(wordsOf(rest.join(" ")).filter(specific).map(stem));
+  return names.length === 0 ? null : { image, names, subjectWords, contextWords };
 }
 
 /** A phrase that names something specific: at least one word that is not generic. */
-const specificPhrase = (phrase: string) => phrase.split(" ").some((w) => w.length >= 3 && !GENERIC.has(w));
+const specificPhrase = (phrase: string) => phrase.split(" ").some(specific);
+
+/**
+ * Whether the card is about a DIFFERENT entity of the same kind as the
+ * figure: its topic has the figure's head noun but a modifier the figure
+ * lacks (papillary vs medullary carcinoma), or the figure has a modifier
+ * the card never mentions (a papillary carcinoma image on a card about
+ * thyroid carcinoma in general). Either way the picture may show something
+ * else: no image.
+ */
+function conflicts(figure: Entity, topics: readonly Entity[], cardWords: ReadonlySet<string>): boolean {
+  return topics.some(
+    (topic) =>
+      topic.head === figure.head &&
+      (topic.modifiers.some((m) => !figure.modifiers.includes(m)) || figure.modifiers.some((m) => !cardWords.has(m))),
+  );
+}
+
+/**
+ * How the card's own text names things with the figure's head noun: each
+ * occurrence with the words right before it (as many as the figure has
+ * modifiers, stopping at sentence structure — "causes | failure") and a
+ * label right after it ("hepatitis B"). "Type II pneumocytes" next to a
+ * "type I pneumocytes" figure is a different entity even when the extracted
+ * topic of the card was cut short.
+ */
+function mentionsOf(words: readonly string[], figure: Entity): Entity[] {
+  const out: Entity[] = [];
+  const span = figure.modifiers.length;
+  words.forEach((word, i) => {
+    if (stem(word) !== figure.head) return;
+    const modifiers: string[] = [];
+    if (LABEL_TOKEN.test(words[i + 1] ?? "") && !FUNCTION_WORDS.has(words[i + 1]!)) modifiers.push(words[i + 1]!);
+    for (let k = i - 1; k >= 0 && i - k <= span; k--) {
+      const w = words[k]!;
+      if (FUNCTION_WORDS.has(w) || isStructureWord(w)) break;
+      modifiers.push(stem(w));
+    }
+    out.push({ head: figure.head, modifiers });
+  });
+  return out;
+}
 
 /**
  * A figure belongs on the back of a text card only on strong evidence that it
  * shows what the card is about (no image is better than a wrong one):
- * - the card names the figure's subject or one of its labels — a specific
- *   phrase ("coagulative necrosis", "plaque rupture", "steatosis"), never a
- *   generic word alone ("necrosis"); or
- * - the card and the figure share at least two specific words.
- * A figure with no caption and no labels is never attached; figures come
- * from the card's own page only.
+ * - never when the card's topic is a different entity of the same kind
+ *   (`conflicts`) — a subtype, a stage, a type number, "acute" vs
+ *   "chronic" — whatever words they share;
+ * - otherwise when the card names the figure's subject or one of its labels
+ *   as a specific phrase ("coagulative necrosis", "plaque rupture",
+ *   "steatosis"), never a generic word alone ("necrosis");
+ * - or mentions every specific word of the figure's subject in other words
+ *   ("thyroid carcinoma of papillary type");
+ * - or names a one-word subject and shares a specific word of the caption's
+ *   context ("crescents in rapidly progressive glomerulonephritis").
+ * Shared family or anatomy words alone ("thyroid", "carcinoma") never
+ * attach. A figure with no caption and no labels is never attached;
+ * figures come from the card's own page only.
  */
 function relatedFigure(fact: Fact, figures: readonly PageFigure[]): CardImage | undefined {
   const text = ` ${normalize(`${fact.text} ${fact.term}`)} `;
-  const words = contentWords(`${fact.text} ${fact.term}`);
+  const cardWords = new Set(wordsOf(`${fact.text} ${fact.term}`).map(stem));
+  const topics = [fact.term, fact.subject ?? ""]
+    .map((t) => entityOf(t.replace(/\([^)]*\)/g, " ").split(SUBJECT_END)[0]!))
+    .filter((e): e is Entity => e !== null);
+  // Each sentence or list item on its own, so words of one are never read as modifiers of the next.
+  const segments = [fact.text, fact.term].flatMap((t) => t.split(/[.;:!?\n]+/)).map(wordsOf).filter((w) => w.length > 0);
   for (const figure of figures) {
-    const named = figure.phrases.some((phrase) => specificPhrase(phrase) && text.includes(` ${phrase} `));
-    const shared = [...figure.words].filter((w) => words.has(w)).length;
-    if (named || shared >= 2) return { ...figure.image, placement: "back" };
+    if (figure.names.some((n) => n.entity && conflicts(n.entity, [...topics, ...segments.flatMap((s) => mentionsOf(s, n.entity!))], cardWords))) continue;
+    const named = figure.names.some((n) => specificPhrase(n.phrase) && text.includes(` ${n.phrase} `));
+    const reworded = figure.subjectWords.length >= 2 && figure.subjectWords.every((w) => cardWords.has(w));
+    const withContext =
+      figure.subjectWords.length === 1 && cardWords.has(figure.subjectWords[0]!) && [...figure.contextWords].some((w) => cardWords.has(w));
+    if (named || reworded || withContext) return { ...figure.image, placement: "back" };
   }
   return undefined;
 }
