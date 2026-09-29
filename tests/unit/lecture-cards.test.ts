@@ -25,7 +25,7 @@ import { AUTO_MIN_SCORE, generateCards, type GeneratedCards } from "@/lib/genera
 import { hasArabic, templatesFor } from "@/lib/generation/language";
 import { buildChunks } from "@/lib/ingestion/extractor";
 import { extractPdfPages } from "@/lib/ingestion/pdf";
-import { analyzeOperatorList, figureAssetId, pageAssetId, selectFigures, type OpsTable, type PageVisualAnalysis, type PageVisuals } from "@/lib/visuals/analyze";
+import { analyzeOperatorList, annotateFigures, figureAssetId, pageAssetId, selectFigures, type OpsTable, type PageVisualAnalysis, type PageVisuals, type PositionedText } from "@/lib/visuals/analyze";
 
 /**
  * Lecture → flashcards: the primary product flow.
@@ -46,23 +46,30 @@ async function fixtureDocument() {
   return extractPdfPages(data, "Cell Injury.pdf", { courseId: COURSE, lectureId: LECTURE });
 }
 
-/** Real operator lists from pdfjs's legacy (Node) build, as the browser renderer would feed them. */
-async function fixtureVisuals(): Promise<PageVisuals[]> {
+/**
+ * Real operator lists and positioned text from pdfjs's legacy (Node) build,
+ * as the browser renderer feeds them: figures are selected, then captioned
+ * and labelled from the page's own text.
+ */
+async function fixtureVisuals(file = FIXTURE): Promise<PageVisuals[]> {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const task = pdfjs.getDocument({ data: new Uint8Array(readFileSync(FIXTURE)), useWorkerFetch: false, useSystemFonts: false, disableFontFace: true });
+  const task = pdfjs.getDocument({ data: new Uint8Array(readFileSync(file)), useWorkerFetch: false, useSystemFonts: false, disableFontFace: true });
   const doc = await task.promise;
   const analyses: PageVisualAnalysis[] = [];
+  const texts = new Map<number, PositionedText[]>();
   try {
     for (let n = 1; n <= doc.numPages; n++) {
       const page = await doc.getPage(n);
       const viewport = page.getViewport({ scale: 1 });
       analyses.push(analyzeOperatorList(await page.getOperatorList(), pdfjs.OPS as unknown as OpsTable, { pageNumber: n, width: viewport.width, height: viewport.height }));
+      const content = await page.getTextContent();
+      texts.set(n, (content.items as unknown as PositionedText[]).filter((i) => typeof i.str === "string"));
       page.cleanup();
     }
   } finally {
     await task.destroy();
   }
-  return selectFigures(analyses);
+  return selectFigures(analyses).map((v) => ({ ...v, figures: annotateFigures(v.figures, texts.get(v.pageNumber) ?? [], analyses[v.pageNumber - 1]!) }));
 }
 
 let cached: { document: Awaited<ReturnType<typeof fixtureDocument>>; visuals: PageVisuals[] } | null = null;
@@ -106,6 +113,11 @@ describe("visual material", () => {
     expect(byPage.get(4)).toMatchObject([{ kind: "diagram" }]);
     // The logo is on every page; the title, list and reference pages have nothing else.
     for (const n of [1, 2, 3, 7, 8, 9, 10]) expect(byPage.get(n)).toEqual([]);
+    // Captions come from the text under each figure; the flowchart's own words are its labels.
+    expect(byPage.get(5)![0]!.caption).toBe("Figure 5.1: hydropic change of renal tubular cells");
+    expect(byPage.get(6)![0]!.caption).toBe("Figure 6.1: steatosis of hepatocytes");
+    expect(byPage.get(4)![0]!.labels).toEqual(["ATP depletion", "Pump failure", "Cellular swelling"]);
+    expect(byPage.get(4)![0]!.caption).toBe("Figure 4.1: from ATP depletion to cellular swelling");
     const raster = byPage.get(5)![0]!.region;
     expect(raster.w).toBeGreaterThan(0.4);
     expect(raster.h).toBeGreaterThan(0.2);
@@ -169,8 +181,9 @@ describe("generation", () => {
     expect(forty.concepts.length).toBeLessThan(40);
     expect(forty.concepts.length).toBe(forty.available - (forty.available - forty.concepts.length));
     expect(forty.shortfall).toBe(40 - forty.concepts.length);
-    // Never the same statement twice, never the same question twice.
-    const prompts = forty.concepts.map((c) => c.retrievalItems[0]!.prompt);
+    // Never the same statement twice, never the same question twice (an image
+    // question is distinguished by the image it shows).
+    const prompts = forty.concepts.map((c) => `${c.retrievalItems[0]!.prompt}|${c.retrievalItems[0]!.image?.placement === "front" ? c.retrievalItems[0]!.image.assetId : ""}`);
     expect(new Set(prompts).size).toBe(prompts.length);
     const texts = forty.concepts.map((c) => c.summary);
     expect(new Set(texts).size).toBe(texts.length);
@@ -205,8 +218,16 @@ describe("generation", () => {
       expect(c.retrievalItems[0]!.conceptId).toBe(c.id);
       expect(cardImageShape(c.retrievalItems[0]!.image ?? { assetId: "x", documentId: "d", pageNumber: 1, placement: "front" })).toBe(true);
     }
+    // Image QUESTIONS only for captioned raster figures: the labelled flowchart
+    // on page 4 would print its own answer on the front.
     const imageCards = out.concepts.filter((c) => c.retrievalItems[0]!.kind === "IMAGE");
-    expect(imageCards.map((c) => c.source.pageNumber)).toEqual([4, 5, 6]);
+    expect(imageCards.map((c) => c.source.pageNumber)).toEqual([5, 6]);
+    expect(imageCards.map((c) => c.retrievalItems[0]!.explanation)).toEqual([
+      "Hydropic change of renal tubular cells (Cellular swelling).",
+      "Steatosis of hepatocytes (Fatty change).",
+    ]);
+    // The source of an image card is its caption, verbatim.
+    expect(imageCards.map((c) => c.source.excerpt)).toEqual(["Figure 5.1: hydropic change of renal tubular cells", "Figure 6.1: steatosis of hepatocytes"]);
     for (const c of imageCards) {
       const image = c.retrievalItems[0]!.image!;
       expect(image.placement).toBe("front");
@@ -215,35 +236,66 @@ describe("generation", () => {
       expect(image.assetId).toBe(figureAssetId(f.document.id, c.source.pageNumber, 0));
       expect(image.region).toBeDefined();
     }
-    // The mechanism on the flowchart slide carries the diagram with its answer.
-    const mechanism = out.concepts.find((c) => c.source.pageNumber === 4 && c.retrievalItems[0]!.kind === "MECHANISM")!;
-    expect(mechanism.retrievalItems[0]!.image).toMatchObject({ placement: "back", pageNumber: 4 });
+    // The flowchart illustrates the back of the mechanism cards it is about
+    // (its labels share their words), and not the one it is not about.
+    const onPage4 = out.concepts.filter((c) => c.source.pageNumber === 4 && c.retrievalItems[0]!.kind === "MECHANISM");
+    const withDiagram = onPage4.filter((c) => c.retrievalItems[0]!.image);
+    expect(withDiagram.length).toBe(2);
+    for (const c of withDiagram) expect(c.retrievalItems[0]!.image).toMatchObject({ placement: "back", pageNumber: 4, assetId: figureAssetId(f.document.id, 4, 0) });
+    expect(onPage4.find((c) => c.summary.startsWith("Reduced ATP"))!.retrievalItems[0]!.image).toBeUndefined();
     // Text-only facts stay text cards.
     const apoptosis = out.concepts.find((c) => c.title === "Apoptosis")!;
     expect(apoptosis.retrievalItems[0]!.image).toBeUndefined();
   });
 
-  it("English, Arabic and mixed modes scaffold the question; medical terms and the source stay as written", async () => {
+  it("English stays English; Arabic and mixed write Arabic questions AND answers, and differ from each other", async () => {
     const f = await fixture();
     const en = generate({ count: 40, language: "en" }, f);
     const ar = generate({ count: 40, language: "ar" }, f);
     const mixed = generate({ count: 40, language: "ar-en" }, f);
-    const prompt = (out: GeneratedCards, title: string) => out.concepts.find((c) => c.title === title)!.retrievalItems[0]!.prompt;
-    expect(prompt(en, "Hypoxia")).toBe("What is the most common cause of cell injury?");
-    expect(prompt(ar, "Hypoxia")).toBe("ما هو most common cause of cell injury؟");
-    expect(prompt(mixed, "Apoptosis")).toBe("ما هو Apoptosis؟");
-    expect(hasArabic(prompt(ar, "Apoptosis"))).toBe(true);
-    expect(hasArabic(prompt(en, "Apoptosis"))).toBe(false);
-    expect(prompt(mixed, "ATP depletion")).toBe("أكمل الآلية: ATP depletion causes ___.");
-    expect(prompt(en, "Patterns of necrosis")).toBe("List: Patterns of necrosis");
-    expect(prompt(ar, "Patterns of necrosis")).toBe("عدّد: Patterns of necrosis");
-    // The answer side is the lecture's verbatim text in every mode.
-    for (const out of [en, ar, mixed]) {
-      expect(out.concepts.find((c) => c.title === "Apoptosis")!.retrievalItems[0]!.explanation).toBe("Apoptosis is programmed cell death mediated by caspases.");
+    const card = (out: GeneratedCards, title: string) => out.concepts.find((c) => c.title === title)!.retrievalItems[0]!;
+    expect(card(en, "Hypoxia").prompt).toBe("What is the most common cause of cell injury?");
+    expect(card(mixed, "Hypoxia").prompt).toBe("ما هو السبب الأكثر شيوعًا لـ cell injury؟");
+    expect(card(mixed, "Hypoxia").explanation).toBe("Hypoxia هو السبب الأكثر شيوعًا لـ cell injury.");
+    expect(card(ar, "Hypoxia").prompt).toBe("ما هو السبب الأكثر شيوعًا لـ إصابة الخلية (cell injury)؟");
+    expect(card(ar, "Hypoxia").explanation).toBe("نقص الأكسجة (Hypoxia) هو السبب الأكثر شيوعًا لـ إصابة الخلية (cell injury).");
+    expect(card(mixed, "ATP depletion").prompt).toBe("إلامَ يؤدي ATP depletion؟");
+    expect(card(mixed, "ATP depletion").explanation).toBe("ATP depletion يؤدي إلى فشل Na+/K+ ATPase pump.");
+    expect(card(ar, "ATP depletion").prompt).toBe("إلامَ يؤدي نفاد ATP (ATP depletion)؟");
+    expect(card(en, "Patterns of necrosis").prompt).toBe("List: Patterns of necrosis");
+    expect(card(mixed, "Patterns of necrosis").prompt).toBe("اذكر أنماط necrosis.");
+    expect(card(ar, "Patterns of necrosis").prompt).toBe("اذكر أنماط النخر (necrosis).");
+    expect(card(ar, "Patterns of necrosis").explanation).toContain("النخر التخثري (Coagulative necrosis)");
+    expect(card(mixed, "Patterns of necrosis").explanation).toContain("Coagulative necrosis،");
+    // English is untouched: no Arabic anywhere, answers are the lecture's sentences.
+    for (const c of en.concepts) {
+      expect(hasArabic(c.retrievalItems[0]!.prompt)).toBe(false);
+      expect(hasArabic(c.retrievalItems[0]!.explanation)).toBe(false);
     }
-    expect(templatesFor("ar").figure(5)).toBe(templatesFor("ar-en").figure(5));
-    expect(templatesFor("en").figure(5)).toBe("What does this figure (page 5) show?");
-    expect(templatesFor("ar").figure(5)).toContain("5");
+    expect(card(en, "Apoptosis").explanation).toBe("Apoptosis is programmed cell death mediated by caspases.");
+    // Arabic modes: every question is Arabic, and never "ما هو <an English sentence>؟".
+    for (const out of [ar, mixed]) {
+      for (const c of out.concepts) {
+        const item = c.retrievalItems[0]!;
+        expect(hasArabic(item.prompt)).toBe(true);
+        const wrapped = /^ما هو (.+)؟$/.exec(item.prompt)?.[1] ?? "";
+        expect(wrapped.split(/\s+/).filter((w) => /^[A-Za-z]/.test(w)).length).toBeLessThanOrEqual(4);
+        // The source stays the lecture's verbatim English.
+        expect(hasArabic(c.source.excerpt)).toBe(false);
+      }
+      expect(out.coverage.arabic + out.coverage.partial).toBe(out.concepts.length);
+    }
+    // Arabic answers are Arabic sentences for the sentence-shaped facts.
+    for (const title of ["Hypoxia", "ATP depletion", "Apoptosis", "Irreversible injury"]) {
+      expect(hasArabic(card(ar, title).explanation)).toBe(true);
+      expect(hasArabic(card(mixed, title).explanation)).toBe(true);
+    }
+    // The modes differ: Arabic writes known medical terms in Arabic, mixed keeps them English.
+    const differing = ar.concepts.filter((c, i) => c.retrievalItems[0]!.prompt !== mixed.concepts[i]!.retrievalItems[0]!.prompt);
+    expect(differing.length).toBeGreaterThan(ar.concepts.length / 2);
+    expect(en.coverage).toEqual({ arabic: 0, partial: 0 });
+    expect(templatesFor("en").figure()).toBe("What is shown in this image?");
+    expect(templatesFor("ar").figure()).toBe("ماذا تُظهر هذه الصورة؟");
   });
 
   it("Generate more adds only new facts and keeps existing cards' FSRS history", async () => {

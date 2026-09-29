@@ -139,7 +139,9 @@ function regionShape(r: unknown): boolean {
 }
 function visualsShape(value: unknown): value is PageVisuals[] {
   return Array.isArray(value) && value.every((v) => record(v) && Number.isInteger(v.pageNumber) && Number(v.pageNumber) >= 1 &&
-    Array.isArray(v.figures) && v.figures.every((f) => record(f) && (f.kind === "raster" || f.kind === "diagram" || f.kind === "page") && regionShape(f.region)) &&
+    Array.isArray(v.figures) && v.figures.every((f) => record(f) && (f.kind === "raster" || f.kind === "diagram" || f.kind === "page") && regionShape(f.region) &&
+      (f.caption === undefined || typeof f.caption === "string") && (f.contentHash === undefined || typeof f.contentHash === "string") &&
+      (f.labels === undefined || (Array.isArray(f.labels) && f.labels.every((l) => typeof l === "string")))) &&
     (v.textChars === undefined || typeof v.textChars === "number"));
 }
 /** A card image is provenance: a document, a page, optionally a region, and where it is shown. */
@@ -636,16 +638,18 @@ export function setLectureLanguage(overrides: CurriculumOverrides, lectureId: st
  */
 export function addGeneratedConcepts(
   overrides: CurriculumOverrides,
-  documentId: string,
+  documentIds: string | readonly string[],
   concepts: readonly Concept[],
 ): CurriculumOverrides {
+  const allowed = new Set(typeof documentIds === "string" ? [documentIds] : documentIds);
   const existing = new Set(overrides.concepts.map((c) => c.id));
-  const fresh = concepts.filter((c) => c.source.documentId === documentId && !existing.has(c.id));
+  const fresh = concepts.filter((c) => allowed.has(c.source.documentId) && !existing.has(c.id));
   if (fresh.length === 0) return overrides;
   const ingested = overrides.ingested.map((entry) => {
-    if (entry.document.id !== documentId) return entry;
+    const mine = fresh.filter((c) => c.source.documentId === entry.document.id);
+    if (mine.length === 0) return entry;
     const chunks = entry.chunks.map((chunk) => ({ ...chunk, conceptIds: [...chunk.conceptIds] }));
-    for (const concept of fresh) {
+    for (const concept of mine) {
       const target =
         chunks.find((chunk) => chunk.pageNumbers.includes(concept.source.pageNumber)) ?? chunks[chunks.length - 1];
       if (target && !target.conceptIds.includes(concept.id)) target.conceptIds.push(concept.id);

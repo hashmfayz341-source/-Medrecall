@@ -37,13 +37,26 @@ const REASON_RANK: Record<OldReviewReason, number> = { overdue: 0, due: 1, near:
  * (FSRS has no memory of them yet), never suspended or buried ones, never
  * the current lecture's own cards. Reads existing FSRS data only.
  */
+export interface EligibilityOptions {
+  /** Cards due within this window count as near-due. */
+  horizonMs?: number;
+  /**
+   * Item ids of old reviews already rated in this session. Once rated, a
+   * card is eligible again only when FSRS actually makes it due (Again's
+   * learning step, minutes away), never merely near-due: Hard, Good and
+   * Easy push it past the session.
+   */
+  ratedThisSession?: ReadonlySet<string>;
+}
+
 export function eligibleOldReviews(
   curriculum: Curriculum,
   learner: LearnerState,
   currentLectureId: string,
   now: Date,
-  horizonMs: number = NEAR_DUE_HORIZON_MS,
+  options: EligibilityOptions | number = {},
 ): OldReview[] {
+  const { horizonMs = NEAR_DUE_HORIZON_MS, ratedThisSession } = typeof options === "number" ? { horizonMs: options } : options;
   const t = now.getTime();
   const out: OldReview[] = [];
   for (const lecture of curriculum.course.lectures) {
@@ -60,7 +73,7 @@ export function eligibleOldReviews(
       let reason: OldReviewReason;
       if (dueAt <= t - OVERDUE_AFTER_MS) reason = "overdue";
       else if (dueAt <= t) reason = "due";
-      else if (dueAt <= t + horizonMs) reason = "near";
+      else if (dueAt <= t + horizonMs && !ratedThisSession?.has(item.id)) reason = "near";
       else continue;
       out.push({ card: { concept, item, progress, queue, due }, reason, lecture });
     }
@@ -84,6 +97,12 @@ export interface SessionCard extends StudyCard {
 export interface ComposeOptions {
   /** Current-lecture cards between two old reviews. */
   every?: number;
+  /**
+   * What is left of today's reviews-per-day allowance for inserted REVIEW-queue
+   * cards (learning cards are never limited, as in the lecture's own queue).
+   * Undefined means no limit (custom study that ignores limits).
+   */
+  maxReviews?: number;
   /**
    * Current-lecture cards rated since the last inserted review (or since the
    * session began). The session keeps this count so the cadence holds as the
@@ -109,7 +128,15 @@ export function composeSession(
   const every = Math.max(1, options.every ?? REVIEW_EVERY);
   const since = Math.max(0, options.currentSinceReview ?? 0);
   const inserted = new Set<string>();
-  const queue = [...old];
+  // The daily allowance: the most urgent review-queue cards first, learning
+  // cards regardless (they are steps of a review already counted).
+  let allowance = options.maxReviews === undefined ? Infinity : Math.max(0, options.maxReviews);
+  const queue = old.filter((r) => {
+    if (r.card.queue !== "REVIEW") return true;
+    if (allowance <= 0) return false;
+    allowance--;
+    return true;
+  });
   const out: SessionCard[] = [];
   const takeOld = (): SessionCard | null => {
     while (queue.length > 0) {

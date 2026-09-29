@@ -6,10 +6,12 @@ import { useMemo, useState } from "react";
 import { useLearner } from "./LearnerProvider";
 import { Button, ButtonLink, Card, SectionTitle } from "./ui";
 import { CardImage } from "./CardImage";
-import { LanguagePicker, CountPicker } from "./GenerationOptions";
+import { ArabicCoverageNote, CountPicker, LanguagePicker } from "./GenerationOptions";
 import { useStudySettings } from "./useStudySettings";
 import { pathologyCurriculum } from "@/lib/content/pathology";
-import { DEFAULT_CARD_LANGUAGE } from "@/lib/domain/curriculum";
+import { DEFAULT_CARD_LANGUAGE, chunkOrderOffset } from "@/lib/domain/curriculum";
+import { buildChunks, toSourceDocument } from "@/lib/ingestion/extractor";
+import { PdfReadError, readLecturePdf } from "@/lib/generation/upload";
 import { buildStudyQueue, studyCardsForLecture } from "@/lib/engine/study";
 import { eligibleOldReviews } from "@/lib/engine/session";
 import { existingCardsOf, parseCount, requestCards } from "@/lib/generation/client";
@@ -49,6 +51,7 @@ export function LectureView({ lectureId }: { lectureId: string }) {
     updateConceptStatuses,
     updateCardText,
     appendGeneratedConcepts,
+    storeIngestedDocument,
     renameUserLecture,
     setLectureCardLanguage,
     lectureSettings,
@@ -69,7 +72,21 @@ export function LectureView({ lectureId }: { lectureId: string }) {
   const [moreLanguage, setMoreLanguage] = useState<CardLanguage | null>(null);
   const [moreChoice, setMoreChoice] = useState("20");
   const [moreCustom, setMoreCustom] = useState("30");
-  const [moreState, setMoreState] = useState<{ kind: "idle" } | { kind: "working" } | { kind: "done"; produced: number; shortfall: number } | { kind: "error"; message: string }>({ kind: "idle" });
+  const [moreState, setMoreState] = useState<
+    | { kind: "idle" }
+    | { kind: "working" }
+    | { kind: "done"; produced: number; shortfall: number; coverage: { arabic: number; partial: number }; language: CardLanguage }
+    | { kind: "error"; message: string }
+  >({ kind: "idle" });
+  /** Which lecture material Generate more reads: every document ("all"), or one. */
+  const [moreSource, setMoreSource] = useState<string>("all");
+  const [showAdd, setShowAdd] = useState(false);
+  const [addState, setAddState] = useState<
+    | { kind: "idle" }
+    | { kind: "working"; message: string }
+    | { kind: "done"; title: string; pages: number; documentId: string; figures: number }
+    | { kind: "error"; message: string }
+  >({ kind: "idle" });
 
   // Once the drafts are all decided, the review filter shows everything.
   const effectiveFilter: Filter = filter === "DRAFT" && concepts.length > 0 && drafts.length === 0 ? "ALL" : filter;
@@ -127,30 +144,62 @@ export function LectureView({ lectureId }: { lectureId: string }) {
   }
 
   async function generateMore() {
-    const document = documents[0];
+    // The chosen document, or every document of the lecture. Duplicates are
+    // avoided across the whole lecture either way (`existing` is lecture-wide).
+    const sources = moreSource === "all" ? documents : documents.filter((d) => d.id === moreSource);
     const count = parseCount(moreChoice, moreCustom);
-    if (!document) return setMoreState({ kind: "error", message: "This lecture has no uploaded PDF to generate from." });
+    if (sources.length === 0) return setMoreState({ kind: "error", message: "This lecture has no uploaded PDF to generate from." });
     if (count === null) return setMoreState({ kind: "error", message: "Enter a whole number of cards (1 to 500), or choose Auto." });
     const chosen = moreLanguage ?? language;
     setMoreState({ kind: "working" });
     try {
-      // Figure metadata stored with the upload (older uploads have none).
-      const visuals = ingested.find((entry) => entry.document.id === document.id)?.visuals ?? [];
       const generated = await requestCards({
         courseId: curriculum.course.id,
         lectureId,
-        document: { id: document.id, title: document.title, pages: document.pages },
-        visuals,
+        documents: sources.map((document) => ({
+          id: document.id,
+          title: document.title,
+          pages: document.pages,
+          // Figure metadata stored with the upload (older uploads have none).
+          visuals: ingested.find((entry) => entry.document.id === document.id)?.visuals ?? [],
+        })),
         language: chosen,
         count,
         existing: existingCardsOf(curriculum, lectureId),
       });
-      appendGeneratedConcepts(document.id, generated.concepts);
+      appendGeneratedConcepts(sources.map((d) => d.id), generated.concepts);
       if (chosen !== language) setLectureCardLanguage(lectureId, chosen);
-      setMoreState({ kind: "done", produced: generated.concepts.length, shortfall: generated.shortfall });
+      setMoreState({ kind: "done", produced: generated.concepts.length, shortfall: generated.shortfall, coverage: generated.coverage, language: chosen });
       if (generated.concepts.length > 0) setFilter("DRAFT");
     } catch (cause) {
       setMoreState({ kind: "error", message: cause instanceof Error ? cause.message : "Card generation failed." });
+    }
+  }
+
+  /** Add another PDF to this lecture: read and store it; its cards come from Generate more. */
+  async function addPdf(file: File | undefined) {
+    if (!file || !lecture) return setAddState({ kind: "error", message: "Choose a PDF first." });
+    setAddState({ kind: "working", message: "Reading the PDF…" });
+    try {
+      const read = await readLecturePdf(file, { courseId: curriculum.course.id, lectureId }, (p) =>
+        setAddState({ kind: "working", message: p.stage === "reading" ? "Reading the PDF…" : `Extracting visual material… ${p.done} / ${p.total} pages` }),
+      );
+      storeIngestedDocument(
+        {
+          lectureId,
+          document: toSourceDocument(read.extracted, lectureId),
+          chunks: buildChunks(read.extracted, lectureId, [], chunkOrderOffset(curriculum, lectureId)),
+          ingestedAt: new Date().toISOString(),
+          visuals: read.visuals,
+        },
+        [],
+      );
+      setAddState({ kind: "done", title: read.extracted.title, pages: read.extracted.pageCount, documentId: read.extracted.id, figures: read.figures });
+      // Generate more now points at the new document.
+      setMoreSource(read.extracted.id);
+      setShowMore(true);
+    } catch (cause) {
+      setAddState({ kind: "error", message: cause instanceof PdfReadError ? cause.message : "Could not read the PDF." });
     }
   }
 
@@ -211,6 +260,11 @@ export function LectureView({ lectureId }: { lectureId: string }) {
                 {showSource ? "Hide source PDF" : "Source PDF"}
               </Button>
             )}
+            {isUserLecture && (
+              <Button variant="secondary" data-testid="add-pdf-open" onClick={() => setShowAdd((v) => !v)}>
+                Add a PDF
+              </Button>
+            )}
             {documents.length > 0 && (
               <Button variant="secondary" data-testid="generate-more-open" onClick={() => setShowMore((v) => !v)}>
                 Generate more cards
@@ -224,12 +278,59 @@ export function LectureView({ lectureId }: { lectureId: string }) {
           </div>
         </header>
 
+        {showAdd && (
+          <Card className="mt-6" data-testid="add-pdf-panel">
+            <SectionTitle>Add a PDF to this lecture</SectionTitle>
+            <p className="mt-2 text-sm text-ink-600">
+              Another deck or chapter for {lecture.title}. Its pages and figures are kept; generate its cards with Generate more.
+            </p>
+            <input
+              type="file"
+              accept="application/pdf,.pdf"
+              data-testid="add-pdf-file"
+              disabled={addState.kind === "working"}
+              onChange={(e) => void addPdf(e.target.files?.[0])}
+              className="mt-4 block w-full text-base text-ink-700 file:mr-4 file:min-h-[3rem] file:rounded-xl file:border-0 file:bg-clinical-600 file:px-6 file:text-base file:font-semibold file:text-white"
+            />
+            {addState.kind === "working" && (
+              <p role="status" data-testid="add-pdf-progress" className="mt-3 text-sm text-clinical-800">{addState.message}</p>
+            )}
+            {addState.kind === "done" && (
+              <p data-testid="add-pdf-done" data-document-id={addState.documentId} className="mt-3 text-sm text-emerald-900">
+                Added {addState.title} ({addState.pages} pages{addState.figures > 0 ? `, ${addState.figures} figures` : ""}). Choose how many cards to generate from it below.
+              </p>
+            )}
+            {addState.kind === "error" && (
+              <p role="alert" data-testid="add-pdf-error" className="mt-3 text-sm text-red-700">{addState.message}</p>
+            )}
+          </Card>
+        )}
+
         {showMore && (
           <Card className="mt-6" data-testid="generate-more-panel">
             <SectionTitle>Generate more cards</SectionTitle>
             <p className="mt-2 text-sm text-ink-600">
-              New cards only: facts already covered are skipped, and your existing cards keep their progress.
+              New cards only: facts already covered anywhere in this lecture are skipped, and your existing cards keep their progress.
             </p>
+            {documents.length > 1 && (
+              <label className="mt-4 flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-ink-500">
+                From
+                <select
+                  data-testid="gm-source"
+                  value={moreSource}
+                  disabled={moreState.kind === "working"}
+                  onChange={(e) => setMoreSource(e.target.value)}
+                  className="min-h-[3.25rem] rounded-xl border border-ink-300 bg-white px-4 text-base font-normal normal-case tracking-normal text-ink-800"
+                >
+                  <option value="all">All lecture material ({documents.length} PDFs)</option>
+                  {documents.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <LanguagePicker value={moreLanguage ?? language} onChange={setMoreLanguage} disabled={moreState.kind === "working"} prefix="gm-lang" />
             <CountPicker choice={moreChoice} custom={moreCustom} onChoice={setMoreChoice} onCustom={setMoreCustom} disabled={moreState.kind === "working"} prefix="gm-count" />
             <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -243,6 +344,9 @@ export function LectureView({ lectureId }: { lectureId: string }) {
                     : `${moreState.produced} new ${moreState.produced === 1 ? "card" : "cards"} added as drafts.`}
                   {moreState.shortfall > 0 && ` Asked for ${moreState.produced + moreState.shortfall}; only ${moreState.produced} more distinct facts were available.`}
                 </p>
+              )}
+              {moreState.kind === "done" && moreState.produced > 0 && (
+                <ArabicCoverageNote language={moreState.language} coverage={moreState.coverage} testId="generate-more-coverage" />
               )}
               {moreState.kind === "error" && (
                 <p role="alert" data-testid="generate-more-error" className="text-sm text-red-700">{moreState.message}</p>
@@ -317,6 +421,7 @@ export function LectureView({ lectureId }: { lectureId: string }) {
                     data-status={concept.status}
                     data-kind={item.kind}
                     data-page={concept.source.pageNumber}
+                    data-document={concept.source.documentId}
                     data-has-image={image ? "true" : "false"}
                     className="rounded-2xl border border-ink-200 bg-white p-5"
                   >

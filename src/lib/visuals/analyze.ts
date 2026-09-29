@@ -65,7 +65,99 @@ export type FigureKind = "raster" | "diagram" | "page";
 export interface FigureCandidate {
   kind: FigureKind;
   region: PageRegion;
+  /** Text found directly under (or over) the figure: "Figure 5.1: hydropic change …". */
+  caption?: string;
+  /** Text drawn inside the figure's region: labels of a diagram, in reading order. */
+  labels?: string[];
+  /** Perceptual hash of the rendered figure, so the same picture on two pages is recognised. */
+  contentHash?: string;
 }
+
+/** A positioned text item as pdfjs's `getTextContent()` reports it (user-space units). */
+export interface PositionedText {
+  str: string;
+  /** [a, b, c, d, x, y]: x/y is the baseline origin in PDF user space. */
+  transform: ArrayLike<number>;
+  width: number;
+  height: number;
+}
+
+/** How far below (or above) a figure a caption may sit, as a fraction of the page height. */
+export const CAPTION_BAND = 0.07;
+const FIGURE_LABEL_PREFIX = /^(fig(?:ure)?|table|image|plate|diagram|chart|graph)\.?\s*[\d.]*[a-z]?\s*[:.\-–—]?\s*/i;
+
+/** The caption's content without its "Figure 5.1:" label. */
+export function captionTarget(caption: string): string {
+  return caption.replace(FIGURE_LABEL_PREFIX, "").replace(/[.\s]+$/, "").trim();
+}
+
+/**
+ * Attach captions and labels to a page's figures from the page's positioned
+ * text. A caption is the text in a narrow band just below the figure (or,
+ * failing that, just above it) that overlaps it horizontally; labels are the
+ * text items drawn inside the figure. Pure and deterministic.
+ */
+export function annotateFigures(
+  figures: readonly FigureCandidate[],
+  items: readonly PositionedText[],
+  page: { width: number; height: number },
+): FigureCandidate[] {
+  const boxes = items
+    .filter((item) => item.str.trim().length > 0 && item.width > 0)
+    .map((item) => {
+      const x = Number(item.transform[4] ?? 0);
+      const y = Number(item.transform[5] ?? 0);
+      const h = Math.max(item.height, Math.abs(Number(item.transform[3] ?? 0)));
+      return {
+        str: item.str.trim(),
+        x0: x / page.width,
+        x1: (x + item.width) / page.width,
+        // PDF y grows upwards; regions use a top-left origin.
+        top: 1 - (y + h) / page.height,
+        bottom: 1 - y / page.height,
+      };
+    });
+  const overlapsX = (b: (typeof boxes)[number], r: PageRegion) => b.x1 > r.x - 0.05 && b.x0 < r.x + r.w + 0.05;
+  const joinRows = (list: typeof boxes) =>
+    [...list]
+      .sort((a, b) => a.top - b.top || a.x0 - b.x0)
+      .map((b) => b.str)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  return figures.map((figure) => {
+    const r = figure.region;
+    const inside = boxes.filter((b) => b.top >= r.y - 0.005 && b.bottom <= r.y + r.h + 0.005 && b.x0 >= r.x - 0.01 && b.x1 <= r.x + r.w + 0.01);
+    const below = boxes.filter((b) => b.top >= r.y + r.h - 0.005 && b.top <= r.y + r.h + CAPTION_BAND && overlapsX(b, r) && !inside.includes(b));
+    const above = boxes.filter((b) => b.bottom <= r.y + 0.005 && b.bottom >= r.y - CAPTION_BAND && overlapsX(b, r) && !inside.includes(b));
+    const pick = (list: typeof boxes) => {
+      if (list.length === 0) return undefined;
+      // Only the nearest row(s): a caption is one or two lines, not the slide's prose.
+      const nearest = Math.min(...list.map((b) => b.top));
+      const text = joinRows(list.filter((b) => b.top <= nearest + 0.035));
+      return text.length >= 4 && text.split(/\s+/).length <= 40 ? text : undefined;
+    };
+    // A "Figure 4.1: …" line drawn inside a diagram's bounds is its caption, not a label.
+    const insideCaption = inside.find((b) => FIGURE_LABEL_PREFIX.test(b.str) && /^(fig|table|image|plate|diagram|chart|graph)/i.test(b.str));
+    const caption =
+      pick(below) ??
+      (above.length > 0 ? pick([...above].map((b) => ({ ...b, top: -b.bottom }))) : undefined) ??
+      insideCaption?.str;
+    const labels = [...inside]
+      .filter((b) => b !== insideCaption)
+      .sort((a, b) => a.top - b.top || a.x0 - b.x0)
+      .map((b) => b.str)
+      .filter((s, i, all) => s.length >= 2 && all.indexOf(s) === i);
+    const out: FigureCandidate = { ...figure };
+    if (caption) out.caption = caption;
+    if (labels.length > 0) out.labels = labels;
+    return out;
+  });
+}
+
+/** Normalised text identity of a figure's answer, for de-duplication. */
+export const captionKey = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 
 export interface PageVisuals {
   pageNumber: number;

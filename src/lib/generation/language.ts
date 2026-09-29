@@ -43,8 +43,8 @@ export interface PromptTemplates {
   cloze: (blanked: string) => string;
   /** "List: the heading" */
   list: (heading: string) => string;
-  /** A visual card: the picture is the question; the page keeps each one distinct. */
-  figure: (pageNumber: number) => string;
+  /** A visual card: the picture is the question, its caption the answer. */
+  figure: () => string;
   /** A fact without a definition or mechanism shape. */
   statement: (term: string) => string;
   /** Label shown before an answer that lists items. */
@@ -57,19 +57,23 @@ const EN: PromptTemplates = {
   mechanism: (blanked) => `Complete the mechanism: ${blanked}`,
   cloze: (blanked) => `Fill in the blank: ${blanked}`,
   list: (heading) => `List: ${heading}`,
-  figure: (pageNumber) => `What does this figure (page ${pageNumber}) show?`,
+  figure: () => "What is shown in this image?",
   statement: (term) => `What does the lecture state about ${term}?`,
   answerListLabel: "",
 };
 
-/** Arabic scaffolding; the lecture's own terms are inserted as written. */
+/**
+ * Fallback Arabic wording only. Cards in the Arabic modes are rendered from
+ * the fact's structure by `./arabic.ts`; these are not used to wrap English
+ * sentences.
+ */
 const AR: PromptTemplates = {
   definition: (term) => `ما هو ${term}؟`,
   superlative: (rest) => `ما هو ${rest.replace(/^the\s+/i, "")}؟`,
   mechanism: (blanked) => `أكمل الآلية: ${blanked}`,
   cloze: (blanked) => `أكمل الفراغ: ${blanked}`,
   list: (heading) => `عدّد: ${heading}`,
-  figure: (pageNumber) => `ماذا تُظهر هذه الصورة (صفحة ${pageNumber})؟`,
+  figure: () => "ماذا تُظهر هذه الصورة؟",
   statement: (term) => `ماذا تذكر المحاضرة عن ${term}؟`,
   answerListLabel: "",
 };

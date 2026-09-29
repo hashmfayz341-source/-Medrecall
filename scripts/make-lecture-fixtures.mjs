@@ -52,7 +52,7 @@ function logoImage() {
  * image, "vector" draws a flowchart with boxes and arrows). Every slide draws
  * the small logo top-right.
  */
-function slideContent(slide, images) {
+function slideContent(slide) {
   const parts = [];
   parts.push(`BT\n/F1 22 Tf\n56 730 Td\n(${esc(slide.heading)}) Tj\nET`);
   const lines = slide.lines ?? [];
@@ -63,7 +63,7 @@ function slideContent(slide, images) {
   parts.push(`q 26 0 0 26 560 750 cm /Logo Do Q`);
   if (slide.figure === "raster") {
     // A 300x225 pt image in the lower half of the slide.
-    parts.push(`q 300 0 0 225 156 120 cm /${images.name} Do Q`);
+    parts.push(`q 300 0 0 225 156 120 cm /${slide.image ?? "Hist"} Do Q`);
     parts.push(`BT\n/F1 11 Tf\n156 104 Td\n(${esc(slide.caption ?? "Figure")}) Tj\nET`);
   }
   if (slide.figure === "vector") {
@@ -86,7 +86,7 @@ function slideContent(slide, images) {
   return parts.join("\n");
 }
 
-function buildPdf(slides, histology) {
+function buildPdf(slides, histology, histology2) {
   const objects = [];
   const add = (body) => { objects.push(body); return objects.length; };
   add("<< /Type /Catalog /Pages 2 0 R >>");
@@ -95,11 +95,12 @@ function buildPdf(slides, histology) {
   const logo = logoImage();
   const logoNum = add(`<< /Type /XObject /Subtype /Image /Width ${logo.w} /Height ${logo.h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length ${logo.bytes.length} >>\nstream\n${logo.bytes.toString("latin1")}\nendstream`);
   const histNum = add(`<< /Type /XObject /Subtype /Image /Width ${histology.w} /Height ${histology.h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length ${histology.bytes.length} >>\nstream\n${histology.bytes.toString("latin1")}\nendstream`);
+  const hist2Num = add(`<< /Type /XObject /Subtype /Image /Width ${histology2.w} /Height ${histology2.h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length ${histology2.bytes.length} >>\nstream\n${histology2.bytes.toString("latin1")}\nendstream`);
   const pageNums = [];
   for (const slide of slides) {
-    const content = slideContent(slide, { name: "Hist" });
+    const content = slideContent(slide);
     const contentNum = add(`<< /Length ${Buffer.byteLength(content, "latin1")} >>\nstream\n${content}\nendstream`);
-    pageNums.push(add(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> /XObject << /Logo ${logoNum} 0 R /Hist ${histNum} 0 R >> >> /Contents ${contentNum} 0 R >>`));
+    pageNums.push(add(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> /XObject << /Logo ${logoNum} 0 R /Hist ${histNum} 0 R /Hist2 ${hist2Num} 0 R >> >> /Contents ${contentNum} 0 R >>`));
   }
   objects[1] = `<< /Type /Pages /Kids [${pageNums.map((n) => `${n} 0 R`).join(" ")}] /Count ${pageNums.length} >>`;
   let pdf = "%PDF-1.4\n";
@@ -116,7 +117,7 @@ const cellInjury = [
   { heading: "Hypoxia", lines: ["Hypoxia is the most common cause of cell injury.", "Ischaemia is the most common cause of hypoxia.", "Ischaemia injures tissue faster than hypoxia alone because substrate delivery also stops."] },
   { heading: "ATP depletion", lines: ["ATP depletion causes failure of the Na+/K+ ATPase pump.", "Failure of the sodium pump leads to influx of sodium and water, producing cellular swelling.", "Reduced ATP also causes a switch to anaerobic glycolysis, which lowers intracellular pH."], figure: "vector", caption: "Figure 4.1: from ATP depletion to cellular swelling" },
   { heading: "Cellular swelling", lines: ["Cellular swelling is the first manifestation of almost all forms of injury to cells.", "Cellular swelling is caused by failure of energy-dependent ion pumps in the plasma membrane."], figure: "raster", caption: "Figure 5.1: hydropic change of renal tubular cells" },
-  { heading: "Fatty change", lines: ["Fatty change (steatosis) is the accumulation of triglycerides within parenchymal cells.", "Fatty change is seen in hypoxic, toxic and metabolic injury, mainly in the liver."], figure: "raster", caption: "Figure 6.1: steatosis of hepatocytes" },
+  { heading: "Fatty change", lines: ["Fatty change (steatosis) is the accumulation of triglycerides within parenchymal cells.", "Fatty change is seen in hypoxic, toxic and metabolic injury, mainly in the liver."], figure: "raster", image: "Hist2", caption: "Figure 6.1: steatosis of hepatocytes" },
   { heading: "Reversible versus irreversible injury", lines: ["Reversible injury shows cellular swelling and fatty change.", "Irreversible injury is defined by severe membrane damage and mitochondrial dysfunction.", "Membrane damage marks the transition to irreversible injury."] },
   { heading: "Patterns of necrosis", lines: ["Coagulative necrosis", "Liquefactive necrosis", "Caseous necrosis", "Fat necrosis", "Fibrinoid necrosis", "Gangrenous necrosis"] },
   { heading: "Apoptosis", lines: ["Apoptosis is programmed cell death mediated by caspases.", "Apoptosis does not elicit an inflammatory reaction.", "Cytochrome c release from mitochondria activates caspase-9 in the intrinsic pathway."] },
@@ -133,6 +134,6 @@ const inflammation = [
 ];
 
 mkdirSync(out, { recursive: true });
-writeFileSync(resolve(out, "Cell Injury.pdf"), buildPdf(cellInjury, { w: 160, h: 120, bytes: syntheticImage(160, 120, 7) }));
-writeFileSync(resolve(out, "Inflammation.pdf"), buildPdf(inflammation, { w: 160, h: 120, bytes: syntheticImage(160, 120, 11) }));
+writeFileSync(resolve(out, "Cell Injury.pdf"), buildPdf(cellInjury, { w: 160, h: 120, bytes: syntheticImage(160, 120, 7) }, { w: 160, h: 120, bytes: syntheticImage(160, 120, 23) }));
+writeFileSync(resolve(out, "Inflammation.pdf"), buildPdf(inflammation, { w: 160, h: 120, bytes: syntheticImage(160, 120, 11) }, { w: 160, h: 120, bytes: syntheticImage(160, 120, 29) }));
 console.log("wrote Cell Injury.pdf and Inflammation.pdf");

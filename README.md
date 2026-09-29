@@ -76,25 +76,45 @@ most learning apps get wrong, and it is enforced in
    rendered and its figures cropped (in your browser — images never leave the
    device), then cards are generated: definitions, mechanisms with the
    consequence blanked, "what is the most common cause of …", bullet lists,
-   clozes, and **image cards** built on the original figure ("What does this
-   figure show?"). Every card cites its page; View source shows the excerpt
-   and the page image.
+   clozes, and **image cards** on an original figure whose caption says what
+   it shows ("What is shown in this image?" → "Steatosis of hepatocytes").
+   Every card cites its page; View source shows the excerpt and the page
+   image.
 4. **Review cards** (`/lectures/<id>`): approve, edit front/back, discard;
    **Approve all** for speed. Cards are drafts until approved.
-5. **Study** (`/study/<id>`), and later **Generate more cards**: only new
-   facts are added; existing cards keep their FSRS history.
+5. **Study** (`/study/<id>`), and later **Generate more cards** — from all
+   of the lecture's PDFs or one of them (**Add a PDF** puts another deck or
+   chapter into the same lecture): only new facts are added, each card keeps
+   its own PDF and page, and existing cards keep their FSRS history.
 
-Visual material is used where it helps and never invented: raster images and
-vector diagrams large enough to be looked at become figures; logos, repeated
-branding, icons and rules are rejected. The card language is persisted per
-lecture. With the built-in deterministic generator the question scaffolding is
-Arabic in the Arabic modes and the lecture's own terms and sentences stay as
-written; a hosted generator (a later, separately safeguarded step) can
-translate explanations in full behind the same boundary.
+**Images are used only where they help, and never invented.** A photograph,
+micrograph or scan becomes an image *question* only when its caption (the
+text just outside it) says what it shows, and that answer is not printed
+inside the picture. A labelled diagram shows its own answer, so it is used
+on the *back* of the text cards it is about instead. A figure with no
+caption or labels is not attached to anything. The same picture on two
+slides never gets two different answers. Logos, repeated branding, icons and
+rules are rejected.
+
+**Languages.** *English* cards are the lecture's own sentences. *Arabic +
+English medical terms* writes Arabic questions and answers around English
+medical terminology ("ما هو السبب الأكثر شيوعًا لـ cell injury؟" →
+"Hypoxia هو السبب الأكثر شيوعًا لـ cell injury."). *Arabic* additionally
+writes the medical terms MedRecall's built-in vocabulary knows in Arabic
+with the English in brackets ("نقص الأكسجة (Hypoxia) هو السبب الأكثر شيوعًا
+لـ إصابة الخلية (cell injury)."). The built-in generator renders the common
+sentence patterns (most common cause, defined as, caused by, leads to,
+results in, characterized by, first manifestation, increased/decreased,
+sequences, lists); a sentence outside them keeps part of its English, and
+the result screen says how many such cards there are. Full translation of
+every sentence needs a configured generation provider (a later, separately
+safeguarded step).
 
 **Old memories while studying a new lecture.** While you study Inflammation,
 Cell Injury cards that FSRS says are overdue, due, or due within the next day
-are mixed in — about one after every four Inflammation cards. They show a
+are mixed in — about one after every four Inflammation cards, within
+today's *reviews per day* limit. A card you rate comes back only when FSRS
+makes it due again (Again's relearning step), never earlier in the session. They show a
 neutral *Review* chip before the answer and their lecture and page after it,
 and rating them updates their own FSRS history; they never join the new
 lecture. FSRS decides *when* a card is due; the session composer only
@@ -207,9 +227,9 @@ Verification:
 ```bash
 npm run lint
 npm run typecheck
-npm run test         # 583 unit tests
+npm run test         # 619 unit tests
 npm run build
-npm run e2e          # 172 Playwright tests, iPad + desktop viewports
+npm run e2e          # 178 Playwright tests, iPad + desktop viewports
 ```
 
 `npm run verify` chains lint, typecheck, unit tests and the production build.

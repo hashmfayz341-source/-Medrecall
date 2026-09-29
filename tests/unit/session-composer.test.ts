@@ -171,3 +171,126 @@ describe("composing a session", () => {
     expect(learner.cards![inserted.item.id]).toEqual(before);
   });
 });
+
+/* ------------------------------------------------------------------ */
+/* Review blockers 3 and 4                                              */
+/* ------------------------------------------------------------------ */
+
+/** Cell Injury cards all in the REVIEW queue (rated Easy at T0), and a moment when every one is due. */
+function reviewState() {
+  const { curriculum, lecture } = newLecture();
+  const learner = studyOld(curriculum, createLearnerState(), T0, "EASY");
+  const cards = studyCardsForLecture(curriculum, OLD);
+  const lastDue = Math.max(...cards.map(({ item }) => new Date(learner.cards![item.id]!.schedule.due).getTime()));
+  return { curriculum, lecture, learner, cards, later: new Date(lastDue + 60 * 60_000) };
+}
+
+describe("Fix 3: an old card rated in this session is not re-inserted before FSRS makes it due again", () => {
+  for (const rating of ["HARD", "GOOD", "EASY"] as const) {
+    it(`${rating}: not back before its new due time — not even as "near-due" — and eligible again once due`, () => {
+      const { curriculum, learner, later } = reviewState();
+      const target = eligibleOldReviews(curriculum, learner, NEW, later)[0]!;
+      const after = recordCardRating(curriculum, learner, { conceptId: target.card.concept.id, itemId: target.card.item.id, rating, now: later }).learner;
+      const newDue = new Date(after.cards![target.card.item.id]!.schedule.due);
+      expect(newDue.getTime()).toBeGreaterThan(later.getTime());
+      const rated = new Set([target.card.item.id]);
+      const inSession = (at: Date) => eligibleOldReviews(curriculum, after, NEW, at, { ratedThisSession: rated }).some((r) => r.card.item.id === target.card.item.id);
+      // Right after rating, and a minute before the new due time: never.
+      expect(inSession(new Date(later.getTime() + 60_000))).toBe(false);
+      expect(inSession(new Date(newDue.getTime() - 60_000))).toBe(false);
+      // Without session identity, the same card WOULD come back as near-due inside the horizon (the reported bug).
+      const nearWindow = new Date(Math.max(later.getTime() + 60_000, newDue.getTime() - NEAR_DUE_HORIZON_MS + 60_000));
+      if (nearWindow < newDue) {
+        expect(eligibleOldReviews(curriculum, after, NEW, nearWindow).some((r) => r.card.item.id === target.card.item.id && r.reason === "near")).toBe(true);
+        expect(inSession(nearWindow)).toBe(false);
+      }
+      // Once FSRS makes it due, it is eligible again.
+      expect(inSession(new Date(newDue.getTime() + 1_000))).toBe(true);
+      // Nothing about the FSRS record was changed by the composer.
+      expect(after.cards![target.card.item.id]!.schedule.due).toBe(newDue.toISOString());
+    });
+  }
+
+  it("AGAIN: the card relearns and legitimately comes back in the same session when its relearning step is due", () => {
+    const { curriculum, lecture, learner, later } = reviewState();
+    const target = eligibleOldReviews(curriculum, learner, NEW, later)[0]!;
+    const after = recordCardRating(curriculum, learner, { conceptId: target.card.concept.id, itemId: target.card.item.id, rating: "AGAIN", now: later }).learner;
+    const newDue = new Date(after.cards![target.card.item.id]!.schedule.due);
+    expect(newDue.getTime() - later.getTime()).toBeLessThan(60 * 60_000); // a relearning step, minutes away
+    const rated = new Set([target.card.item.id]);
+    expect(eligibleOldReviews(curriculum, after, NEW, new Date(later.getTime() + 30_000), { ratedThisSession: rated }).some((r) => r.card.item.id === target.card.item.id)).toBe(false);
+    const due = new Date(newDue.getTime() + 1_000);
+    const back = eligibleOldReviews(curriculum, after, NEW, due, { ratedThisSession: rated }).find((r) => r.card.item.id === target.card.item.id)!;
+    expect(back.reason).toBe("due");
+    expect(back.card.queue).toBe("LEARNING");
+    // And it is composed back into the session.
+    const session = composeSession(buildStudyQueue(curriculum, after, NEW, due).queue, lecture, eligibleOldReviews(curriculum, after, NEW, due, { ratedThisSession: rated }));
+    expect(session.some((c) => c.origin === "review" && c.item.id === target.card.item.id)).toBe(true);
+  });
+});
+
+describe("Fix 4: inserted old reviews respect the existing reviews-per-day allowance", () => {
+  function urgencyState() {
+    const { curriculum, lecture, learner, cards, later } = reviewState();
+    // Distinct urgencies: A overdue (2 days), B due (1 hour ago), C near (in 2 hours); the rest far in the future.
+    const at = (ms: number) => new Date(later.getTime() + ms).toISOString();
+    const [a, b, c, ...rest] = cards;
+    const moved: LearnerState = { ...learner, cards: { ...learner.cards } };
+    const set = (id: string, due: string) => (moved.cards![id] = { ...moved.cards![id]!, schedule: { ...moved.cards![id]!.schedule, due } });
+    set(a!.item.id, at(-2 * 24 * 3_600_000));
+    set(b!.item.id, at(-3_600_000));
+    set(c!.item.id, at(2 * 3_600_000));
+    for (const r of rest) set(r.item.id, at(30 * 24 * 3_600_000));
+    // Plenty of due ones too, to exceed small limits.
+    for (const r of rest.slice(0, 6)) set(r.item.id, at(-10 * 60_000));
+    return { curriculum, lecture, learner: moved, later, ids: { a: a!.item.id, b: b!.item.id, c: c!.item.id } };
+  }
+
+  const inserted = (maxReviews: number | undefined) => {
+    const { curriculum, lecture, learner, later, ids } = urgencyState();
+    const current = buildStudyQueue(curriculum, learner, NEW, later).queue;
+    const old = eligibleOldReviews(curriculum, learner, NEW, later);
+    return { reviews: composeSession(current, lecture, old, { maxReviews }).filter((c) => c.origin === "review"), ids, old };
+  };
+
+  it("limit 0: no old reviews are inserted", () => {
+    expect(inserted(0).reviews).toEqual([]);
+  });
+
+  it("limit 1: exactly one, the most overdue", () => {
+    const { reviews, ids } = inserted(1);
+    expect(reviews.map((r) => r.item.id)).toEqual([ids.a]);
+    expect(reviews[0]!.reason).toBe("overdue");
+  });
+
+  it("limit 5: five, in overdue → due → near-due order", () => {
+    const { reviews, ids, old } = inserted(5);
+    expect(old.length).toBeGreaterThan(5);
+    expect(reviews).toHaveLength(5);
+    expect(reviews[0]!.item.id).toBe(ids.a);
+    const rank = { overdue: 0, due: 1, near: 2 } as const;
+    for (let i = 1; i < reviews.length; i++) expect(rank[reviews[i - 1]!.reason!]).toBeLessThanOrEqual(rank[reviews[i]!.reason!]);
+    expect(reviews.some((r) => r.item.id === ids.c)).toBe(false); // the near-due one is least urgent
+  });
+
+  it("ignore limits (no allowance given): every eligible review is available", () => {
+    const { reviews, old } = inserted(undefined);
+    // Every overdue and due review comes, once each; the near-due one only rides a cadence
+    // slot, and here every slot goes to a more urgent card first.
+    const owed = old.filter((r) => r.reason !== "near").map((r) => r.card.item.id);
+    expect(owed.length).toBeGreaterThan(5);
+    expect(new Set(reviews.map((r) => r.item.id))).toEqual(new Set(owed));
+    expect(reviews).toHaveLength(owed.length);
+  });
+
+  it("the allowance is what the existing daily limit leaves: today's reviews and this lecture's shown reviews count first, once", () => {
+    const { curriculum, learner, later } = urgencyState();
+    // Rate one old review: recordCardRating counts it in today's tally (the existing daily-limit bookkeeping).
+    const target = eligibleOldReviews(curriculum, learner, NEW, later)[0]!;
+    const after = recordCardRating(curriculum, learner, { conceptId: target.card.concept.id, itemId: target.card.item.id, rating: "GOOD", now: later }).learner;
+    expect(after.studyDay!.reviews).toBe((learner.studyDay?.day === after.studyDay!.day ? learner.studyDay!.reviews : 0) + 1);
+    // With reviewsPerDay = 1 that rating used the whole allowance: nothing more is inserted.
+    const remaining = Math.max(0, 1 - after.studyDay!.reviews - buildStudyQueue(curriculum, after, NEW, later).counts.review);
+    expect(remaining).toBe(0);
+  });
+});

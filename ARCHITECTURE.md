@@ -717,11 +717,36 @@ Tutor remains available on the demo course.
   and existing cards keep their FSRS history. A requested count is never
   padded: the maximum useful set is returned with a `shortfall`; AUTO keeps
   facts at or above a score threshold.
-- **Language modes change the question, not the source.** `ar` and `ar-en`
-  wrap the lecture's own terms in Arabic prompts; the answer side is the
-  lecture's verbatim text in every mode. Translating explanations is a
-  hosted-generator capability behind the same boundary. Arabic text is laid
-  out with `dir="auto"`.
+- **Arabic cards are rendered from the fact's structure, never wrapped**
+  (`lib/generation/arabic.ts`). A sentence is split into noun phrases and
+  the connectors between them; connectors, verbs and question words are
+  Arabic, so question AND answer are Arabic sentences. A noun phrase is
+  rendered as a whole or kept exactly as written — never word by word, which
+  would scramble Arabic word order. `ar-en` keeps medical noun phrases in
+  English; `ar` writes the ones its general lexicon knows in Arabic with the
+  English in brackets and puts adjective + noun phrases in Arabic order.
+  Templates exist for the generator's fact kinds; anything else becomes an
+  Arabic fill-in-the-blank, and a card whose sentence kept an English clause
+  is counted as `partial` and disclosed in the UI. The source excerpt stays
+  the lecture's verbatim English; View source shows it. Full translation is
+  a hosted-generator capability behind the same boundary. Arabic text is
+  laid out with `dir="auto"`.
+- **An image question needs a visual answer the image supports.** Captions
+  and labels come from the page's positioned text (`annotateFigures`):
+  the caption is the text in a narrow band just outside the figure; labels
+  are the text inside it. Only a raster figure with a caption becomes a
+  question, answered by that caption, and not when the answer is printed
+  inside the picture. A sentence elsewhere on the slide never answers an
+  image. A labelled diagram is not a question (it shows its answer); it
+  illustrates the back of text cards that share a specific word with its
+  caption or labels, and a figure with neither is attached to nothing.
+  Figures whose rendered content is identical (a perceptual hash) keep one
+  question when their captions agree and none when they contradict; an
+  image question that only repeats a text card is dropped.
+- **Generation reads the lecture's documents, not "the" document.** A
+  lecture may hold several PDFs (*Add a PDF*); *Generate more* reads all of
+  them or the one chosen, de-duplicates against the whole lecture, and every
+  card keeps its own document, page, excerpt and image.
 - **Visual material is original and geometric.** Every page is rendered in
   the browser (pdfjs legacy build) and stored in IndexedDB
   (`medrecall.assets.v1`) with figures cropped from it; figures are found
@@ -741,6 +766,12 @@ Tutor remains available on the demo course.
   rating an inserted card is the ordinary `recordCardRating` on its own
   concept, so ownership, provenance and history are unchanged. New cards are
   never inserted (FSRS has no memory of them), nor suspended or buried ones.
+  Inserted REVIEW-queue cards draw on the existing *reviews per day*
+  allowance — what today's reviews and the lecture's own shown reviews
+  leave — most urgent first; learning cards are never limited, as in any
+  queue. An old card rated in the session is remembered: it returns only
+  when FSRS makes it due again (Again's relearning step), never as
+  near-due, so Hard, Good and Easy do not bring it back early.
 - **One commit per upload.** The lecture, its document, chunks, figure
   metadata, cards and language are stored in a single `commitOverrides`
   mutation, so an interrupted upload leaves nothing half-made.

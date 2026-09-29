@@ -18,8 +18,9 @@ import type { FigureCandidate, PageVisuals } from "@/lib/visuals/analyze";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-const MAX_BODY_BYTES = 6 * 1024 * 1024;
+const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const MAX_PAGES = 600;
+const MAX_DOCUMENTS = 20;
 
 const bad = (error: string, status = 400) => NextResponse.json({ error }, { status });
 const record = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -31,7 +32,9 @@ function pageShape(v: unknown): v is Page {
 }
 function figureShape(v: unknown): v is FigureCandidate {
   return record(v) && (v.kind === "raster" || v.kind === "diagram" || v.kind === "page") && record(v.region) &&
-    fraction(v.region.x) && fraction(v.region.y) && fraction(v.region.w) && fraction(v.region.h);
+    fraction(v.region.x) && fraction(v.region.y) && fraction(v.region.w) && fraction(v.region.h) &&
+    (v.caption === undefined || str(v.caption, 2000)) && (v.contentHash === undefined || str(v.contentHash, 64)) &&
+    (v.labels === undefined || (Array.isArray(v.labels) && v.labels.length <= 200 && v.labels.every((l) => str(l, 500))));
 }
 function visualsShape(v: unknown): v is PageVisuals {
   return record(v) && Number.isInteger(v.pageNumber) && Number(v.pageNumber) >= 1 && Array.isArray(v.figures) &&
@@ -51,15 +54,28 @@ export async function POST(request: Request) {
     return bad("Expected a JSON body.");
   }
   if (!record(body)) return bad("Expected a JSON object.");
-  const { courseId, lectureId, document, visuals, language, count, existing } = body;
+  const { courseId, lectureId, language, count, existing } = body;
   if (!str(courseId, 200) || !str(lectureId, 200) || !courseId || !lectureId) return bad("courseId and lectureId are required.");
-  if (!record(document) || !str(document.id, 500) || !str(document.title, 500) || !Array.isArray(document.pages) ||
-    document.pages.length === 0 || document.pages.length > MAX_PAGES || !document.pages.every(pageShape)) {
-    return bad("document must carry an id, a title and its pages.");
+  // `documents: [{ id, title, pages, visuals? }]`, or the single-document form `document` + `visuals`.
+  const documents = Array.isArray(body.documents)
+    ? body.documents
+    : body.document !== undefined
+      ? [{ ...(record(body.document) ? body.document : {}), visuals: body.visuals }]
+      : null;
+  if (!documents || documents.length === 0 || documents.length > MAX_DOCUMENTS) return bad(`documents must list 1 to ${MAX_DOCUMENTS} lecture documents.`);
+  let totalPages = 0;
+  for (const document of documents) {
+    if (!record(document) || !str(document.id, 500) || !str(document.title, 500) || !Array.isArray(document.pages) ||
+      document.pages.length === 0 || document.pages.length > MAX_PAGES || !document.pages.every(pageShape)) {
+      return bad("each document must carry an id, a title and its pages.");
+    }
+    totalPages += document.pages.length;
+    const visuals = document.visuals;
+    if (visuals !== undefined && (!Array.isArray(visuals) || visuals.length > MAX_PAGES || !visuals.every(visualsShape))) {
+      return bad("visuals must be a list of page figures.");
+    }
   }
-  if (visuals !== undefined && (!Array.isArray(visuals) || visuals.length > MAX_PAGES || !visuals.every(visualsShape))) {
-    return bad("visuals must be a list of page figures.");
-  }
+  if (totalPages > MAX_PAGES) return bad(`At most ${MAX_PAGES} pages per request.`);
   if (!(CARD_LANGUAGES as readonly string[]).includes(String(language))) return bad("language must be en, ar or ar-en.");
   let requested: CardCount;
   if (count === "auto") requested = "auto";
@@ -72,8 +88,10 @@ export async function POST(request: Request) {
   const result = await getGenerationProvider().generateCards({
     courseId,
     lectureId,
-    document: { id: document.id, title: document.title, pages: document.pages },
-    visuals: (visuals ?? []) as PageVisuals[],
+    documents: documents.map((d) => {
+      const doc = d as { id: string; title: string; pages: Page[]; visuals?: PageVisuals[] };
+      return { id: doc.id, title: doc.title, pages: doc.pages, visuals: doc.visuals ?? [] };
+    }),
     language: language as CardLanguage,
     count: requested,
     existing: (existing ?? []) as ExistingCard[],

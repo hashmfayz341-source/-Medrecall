@@ -96,8 +96,8 @@ interface LearnerContextValue {
     concepts: readonly Concept[];
     language: CardLanguage;
   }) => void;
-  /** Append newly generated DRAFT cards to an existing document ("Generate more"). */
-  appendGeneratedConcepts: (documentId: string, concepts: readonly Concept[]) => void;
+  /** Append newly generated DRAFT cards to the lecture documents they came from ("Generate more"). */
+  appendGeneratedConcepts: (documentIds: readonly string[], concepts: readonly Concept[]) => void;
   renameUserLecture: (lectureId: string, title: string) => void;
   setLectureCardLanguage: (lectureId: string, language: CardLanguage) => void;
   /** Per-lecture generation settings (language). */
@@ -342,8 +342,8 @@ export function LearnerProvider({ children }: { children: React.ReactNode }) {
   );
 
   const appendGeneratedConcepts = useCallback(
-    (documentId: string, concepts: readonly Concept[]) =>
-      mutate((current) => addGeneratedConcepts(current, documentId, concepts)),
+    (documentIds: readonly string[], concepts: readonly Concept[]) =>
+      mutate((current) => addGeneratedConcepts(current, documentIds, concepts)),
     [mutate],
   );
 

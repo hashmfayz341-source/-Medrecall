@@ -2,7 +2,7 @@ import { normalize } from "@/lib/domain/text";
 import type { Page, PageRegion } from "@/lib/domain/types";
 import { splitSentences, splitSubjectPredicate, titleFromSubject } from "@/lib/ingestion/extractor";
 import { contentWords, wordOverlap } from "@/lib/domain/duplicates";
-import type { FigureKind, PageVisuals } from "@/lib/visuals/analyze";
+import { captionTarget, type FigureKind, type PageVisuals } from "@/lib/visuals/analyze";
 
 /**
  * Grounded facts of a lecture: what a flashcard can be made from.
@@ -37,9 +37,45 @@ export interface Fact {
   consequence?: string;
   /** For lists: the items. */
   items?: string[];
-  /** For figures: which figure of the page. */
-  figure?: { index: number; kind: FigureKind; region: PageRegion };
+  /** For figures: which figure of the page, and the visual answer its caption establishes. */
+  figure?: {
+    index: number;
+    kind: FigureKind;
+    region: PageRegion;
+    /** The caption's content without its "Figure 5.1:" label: what the picture shows. */
+    answer: string;
+    contentHash?: string;
+  };
   score: number;
+}
+
+/** A caption must say something: at least this many words after its "Figure 5.1:" label. */
+const MIN_CAPTION_WORDS = 2;
+
+/**
+ * What a figure can be asked about, or null when it cannot be an image
+ * question at all.
+ *
+ * An image question needs an answer the picture itself supports and does
+ * not give away:
+ * - only a RASTER figure (a photograph, a micrograph, a scan) qualifies. A
+ *   vector diagram or a whole page carries its labels and text inside the
+ *   picture, so the answer would be printed on the front;
+ * - its caption, found OUTSIDE the cropped figure, names what it shows;
+ * - the answer is not written inside the figure itself.
+ *
+ * A sentence elsewhere on the slide never qualifies: nothing establishes
+ * that the picture shows it. Figures that fail these rules can still
+ * illustrate the back of a text card they are demonstrably about (see
+ * `generateCards`).
+ */
+export function visualTarget(figure: { kind: FigureKind; caption?: string; labels?: string[] }): { answer: string } | null {
+  if (figure.kind !== "raster") return null;
+  const caption = figure.caption ? captionTarget(figure.caption) : "";
+  if (!caption || wordCount(caption) < MIN_CAPTION_WORDS || ADMIN_LINE.test(caption)) return null;
+  const answer = normalize(caption);
+  if ((figure.labels ?? []).some((label) => normalize(label).includes(answer) || (normalize(label).length > 3 && answer.includes(normalize(label))))) return null;
+  return { answer: caption };
 }
 
 const ADMIN_PAGE = /^(references?|bibliography|further reading|thank you|thanks|questions\??|any questions|objectives|learning objectives|outline|agenda|contents|acknowledg\w*|summary of the lecture)$/i;
@@ -48,6 +84,7 @@ const CORE_SIGNALS = /\b(most common|most important|commonest|first|earliest|hal
 // "causes" as a verb, not "the most common cause of".
 const MECHANISM = /(→|->|\bleads? to\b|(?<!\b(?:the|a|an|common|commonest|main|major|leading|important|underlying|first|primary)\s)\bcauses?\b|\bcaused by\b|\bresults? in\b|\bresulting in\b|\bproduc(?:es|ing)\b|\bactivates?\b|\btriggers?\b|\binhibits?\b|\bdue to\b|\bfollowed by\b|\bswitch(?:es)? to\b|\bmediat(?:es|ed by)\b|\ballows?\b)/i;
 const COPULA = /^(is|are|refers to|means|represents|constitutes?)$/i;
+const NOT_A_DEFINITION = /^(seen|found|located|observed|present|absent|common|rare|usually|often|mainly|also|not|more|less|most|associated|replaced|released|stored)$/i;
 /** "X is the most common cause of Y": the ideal retrieval asks for X given the rest. */
 const SUPERLATIVE = /^(.+?)\s+(is|are)\s+(the\s+(?:most common|commonest|most important|main|major|leading|first|earliest|hallmark|characteristic|classic|typical|primary|only)\b.+?)[.!?]?$/i;
 /** Words that make a line a statement rather than a bullet item. */
@@ -93,7 +130,8 @@ export function splitMechanism(sentence: string): { cause: string; connector: st
   if (!match || match.index === undefined) return null;
   const cause = sentence.slice(0, match.index).trim();
   const consequence = sentence.slice(match.index + match[0].length).replace(/[.!?]$/, "").trim();
-  if (wordCount(cause) < 2 || wordCount(consequence) < 2) return null;
+  // A one-word cause is fine ("Ischaemia leads to …"); a pronoun is not ("This leads to …").
+  if (wordCount(cause) < 1 || /^(this|that|it|these|they|which|there)$/i.test(cause) || wordCount(consequence) < 2) return null;
   return { cause, connector: match[0].trim(), consequence };
 }
 
@@ -149,17 +187,23 @@ export function extractFacts(pages: readonly Page[], visuals: readonly PageVisua
       const words = wordCount(sentence);
       if (words < MIN_SENTENCE_WORDS || words > MAX_SENTENCE_WORDS) continue;
       if (ADMIN_LINE.test(sentence)) continue;
-      const split = splitSubjectPredicate(sentence);
+      // "A → B → C": a sequence has no verb; its first step is the subject.
+      const arrow = /\s(→|->)\s/.exec(sentence);
+      const split =
+        splitSubjectPredicate(sentence) ??
+        (arrow ? { subject: sentence.slice(0, arrow.index).trim(), predicate: sentence.slice(arrow.index).trim() } : null);
       if (!split) continue;
       const term = titleFromSubject(split.subject);
       if (!term) continue;
       const superlative = splitSuperlative(sentence);
       const mechanism = superlative ? null : splitMechanism(sentence);
       const verb = split.predicate.split(/\s+/)[0] ?? "";
+      const complement = split.predicate.split(/\s+/)[1] ?? "";
       let kind: FactKind = "statement";
       if (superlative) kind = "superlative";
       else if (mechanism) kind = "mechanism";
-      else if (COPULA.test(verb) || /\bdefined as\b/i.test(sentence)) kind = "definition";
+      // "X is seen in …" / "X is found in …" state where, not what: not a definition.
+      else if ((COPULA.test(verb) && !NOT_A_DEFINITION.test(complement)) || /\bdefined as\b/i.test(sentence)) kind = "definition";
       push({
         kind,
         heading,
@@ -171,23 +215,21 @@ export function extractFacts(pages: readonly Page[], visuals: readonly PageVisua
       });
     }
 
-    // One figure fact per selected figure, answered by the page's best sentence.
+    // One image question per figure whose caption establishes what it shows.
+    // The verbatim source of the card is the caption.
     const figures = figuresByPage.get(page.number) ?? [];
-    const best = [...pageFacts].filter((f) => f.kind !== "list").sort((a, b) => b.score - a.score)[0];
-    const answer = best?.text ?? (heading ? heading : null);
-    if (answer) {
-      figures.forEach((figure, i) => {
-        push({
-          kind: "figure",
-          heading,
-          text: answer,
-          term: heading ?? best?.term ?? `Figure, page ${page.number}`,
-          subject: best?.subject,
-          figure: { index: i, kind: figure.kind, region: figure.region },
-          score: 2.5,
-        });
+    figures.forEach((figure, i) => {
+      const target = visualTarget(figure);
+      if (!target) return;
+      push({
+        kind: "figure",
+        heading,
+        text: figure.caption!,
+        term: target.answer,
+        figure: { index: i, kind: figure.kind, region: figure.region, answer: target.answer, contentHash: figure.contentHash },
+        score: 2.5,
       });
-    }
+    });
     facts.push(...pageFacts);
   }
   return facts;

@@ -2,12 +2,14 @@ import type { PageRegion } from "@/lib/domain/types";
 import type { StoredAsset } from "@/lib/persistence/assetStore";
 import {
   analyzeOperatorList,
+  annotateFigures,
   figureAssetId,
   pageAssetId,
   selectFigures,
   type OpsTable,
   type PageVisualAnalysis,
   type PageVisuals,
+  type PositionedText,
 } from "./analyze";
 
 /**
@@ -71,6 +73,32 @@ function toBlob(canvas: HTMLCanvasElement, quality: number): Promise<Blob | null
   return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob), "image/jpeg", quality));
 }
 
+/**
+ * A small perceptual hash of a rendered figure (8×8 grey, thresholded at the
+ * mean): the same picture drawn on two pages hashes the same, a different
+ * picture does not. Good enough to keep one image from getting two answers.
+ */
+export function imageHash(source: HTMLCanvasElement): string | undefined {
+  const tiny = document.createElement("canvas");
+  tiny.width = 8;
+  tiny.height = 8;
+  const ctx = tiny.getContext("2d");
+  if (!ctx) return undefined;
+  ctx.drawImage(source, 0, 0, 8, 8);
+  let data: Uint8ClampedArray;
+  try {
+    data = ctx.getImageData(0, 0, 8, 8).data;
+  } catch {
+    return undefined;
+  }
+  const grey: number[] = [];
+  for (let i = 0; i < data.length; i += 4) grey.push((data[i]! * 299 + data[i + 1]! * 587 + data[i + 2]! * 114) / 1000);
+  const mean = grey.reduce((a, b) => a + b, 0) / grey.length;
+  let bits = "";
+  for (const g of grey) bits += g >= mean ? "1" : "0";
+  return parseInt(bits.slice(0, 32), 2).toString(16).padStart(8, "0") + parseInt(bits.slice(32), 2).toString(16).padStart(8, "0");
+}
+
 function crop(source: HTMLCanvasElement, region: PageRegion): HTMLCanvasElement {
   const sx = Math.floor(region.x * source.width);
   const sy = Math.floor(region.y * source.height);
@@ -97,6 +125,7 @@ export async function renderPdfDocument(data: ArrayBuffer, options: RenderOption
   const doc = await task.promise;
   const OPS = pdfjs.OPS as unknown as OpsTable;
   const analyses: PageVisualAnalysis[] = [];
+  const texts = new Map<number, PositionedText[]>();
   const canvases = new Map<number, HTMLCanvasElement>();
   const createdAt = new Date().toISOString();
   const assets: StoredAsset[] = [];
@@ -108,6 +137,14 @@ export async function renderPdfDocument(data: ArrayBuffer, options: RenderOption
       const base = page.getViewport({ scale: 1 });
       const ops = await page.getOperatorList();
       analyses.push(analyzeOperatorList(ops, OPS, { pageNumber: n, width: base.width, height: base.height }));
+      const content = await page.getTextContent();
+      const positioned: PositionedText[] = [];
+      for (const item of content.items as unknown as Partial<PositionedText>[]) {
+        if (typeof item.str === "string" && item.transform && typeof item.width === "number" && typeof item.height === "number") {
+          positioned.push({ str: item.str, transform: item.transform, width: item.width, height: item.height });
+        }
+      }
+      texts.set(n, positioned);
 
       report({ stage: "rendering", done: n - 1, total: doc.numPages });
       const scale = Math.min(2, maxSide / Math.max(base.width, base.height));
@@ -129,13 +166,18 @@ export async function renderPdfDocument(data: ArrayBuffer, options: RenderOption
       page.cleanup();
     }
 
-    const visuals = selectFigures(analyses);
+    const visuals: PageVisuals[] = selectFigures(analyses).map((pageVisuals) => {
+      const analysis = analyses.find((a) => a.pageNumber === pageVisuals.pageNumber)!;
+      return { ...pageVisuals, figures: annotateFigures(pageVisuals.figures, texts.get(pageVisuals.pageNumber) ?? [], analysis) };
+    });
     for (const pageVisuals of visuals) {
       const canvas = canvases.get(pageVisuals.pageNumber);
       if (!canvas) continue;
       for (let i = 0; i < pageVisuals.figures.length; i++) {
         const figure = pageVisuals.figures[i]!;
         const cropped = crop(canvas, figure.region);
+        const hash = imageHash(cropped);
+        if (hash) figure.contentHash = hash;
         const blob = await toBlob(cropped, quality);
         if (blob) {
           assets.push({

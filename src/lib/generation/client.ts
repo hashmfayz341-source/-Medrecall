@@ -12,8 +12,8 @@ export const COUNT_PRESETS = [20, 40, 60, 100] as const;
 export interface GenerationRequest {
   courseId: string;
   lectureId: string;
-  document: { id: string; title: string; pages: { number: number; title: string; text: string }[] };
-  visuals: readonly PageVisuals[];
+  /** The lecture documents to generate from, each with the figures found in it. */
+  documents: { id: string; title: string; pages: { number: number; title: string; text: string }[]; visuals?: readonly PageVisuals[] }[];
   language: CardLanguage;
   count: CardCount;
   existing: readonly ExistingCard[];

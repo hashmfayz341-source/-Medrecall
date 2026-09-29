@@ -4,15 +4,13 @@ import Link from "next/link";
 import { useMemo, useRef, useState } from "react";
 import { useLearner } from "./LearnerProvider";
 import { Button, ButtonLink, Card, SectionTitle } from "./ui";
-import { LanguagePicker, CountPicker } from "./GenerationOptions";
+import { ArabicCoverageNote, CountPicker, LanguagePicker } from "./GenerationOptions";
 import { buildChunks, toSourceDocument } from "@/lib/ingestion/extractor";
 import { nextLectureOrder } from "@/lib/domain/curriculum";
 import { lectureIdFor, titleFromFileName } from "@/lib/domain/titles";
 import { existingCardsOf, parseCount, requestCards } from "@/lib/generation/client";
-import { putAssets } from "@/lib/persistence/assetStore";
-import { renderPdfDocument } from "@/lib/visuals/browser";
-import type { PageVisuals } from "@/lib/visuals/analyze";
-import type { CardLanguage, Lecture, Page } from "@/lib/domain/types";
+import { PdfReadError, readLecturePdf, type ReadPdf } from "@/lib/generation/upload";
+import type { CardLanguage, Lecture } from "@/lib/domain/types";
 
 /*
  * The primary MedRecall flow: upload a lecture PDF → choose language and
@@ -24,9 +22,6 @@ import type { CardLanguage, Lecture, Page } from "@/lib/domain/types";
  * at the end, so an interrupted upload leaves nothing half-made.
  */
 
-interface IngestResponse {
-  document: { id: string; title: string; lectureId: string; pageCount: number; pages: Page[] };
-}
 
 type Stage = "idle" | "reading" | "visuals" | "generating" | "checking" | "done" | "error";
 
@@ -50,7 +45,16 @@ export function UploadFlow() {
   const [countChoice, setCountChoice] = useState("40");
   const [customCount, setCustomCount] = useState("150");
   const [progress, setProgress] = useState<Progress>({ stage: "idle", message: "" });
-  const [result, setResult] = useState<{ lectureId: string; produced: number; requested: string; shortfall: number; figures: number; visualsFailed: boolean } | null>(null);
+  const [result, setResult] = useState<{
+    lectureId: string;
+    produced: number;
+    requested: string;
+    shortfall: number;
+    figures: number;
+    visualsFailed: boolean;
+    coverage: { arabic: number; partial: number };
+    language: CardLanguage;
+  } | null>(null);
 
   const chosenLanguage = language ?? lastLanguage;
   const count = parseCount(countChoice, customCount);
@@ -81,49 +85,26 @@ export function UploadFlow() {
     };
 
     try {
-      setProgress({ stage: "reading", message: "Reading the lecture…" });
-      const body = new FormData();
-      body.set("file", file);
-      body.set("courseId", curriculum.course.id);
-      body.set("lectureId", lecture.id);
-      const response = await fetch("/api/ingest", { method: "POST", body });
-      const payload: unknown = await response.json().catch(() => null);
-      if (!response.ok) {
-        const message = typeof payload === "object" && payload !== null && "error" in payload ? String((payload as { error: unknown }).error) : "Could not read the PDF.";
-        setProgress({ stage: "error", message });
+      let read: ReadPdf;
+      try {
+        read = await readLecturePdf(file, { courseId: curriculum.course.id, lectureId: lecture.id }, (p) =>
+          setProgress(
+            p.stage === "reading"
+              ? { stage: "reading", message: "Reading the lecture…" }
+              : { stage: "visuals", message: "Extracting visual material…", done: p.done, total: p.total },
+          ),
+        );
+      } catch (cause) {
+        setProgress({ stage: "error", message: cause instanceof PdfReadError ? cause.message : "Could not read the PDF." });
         return;
       }
-      const ingest = payload as IngestResponse;
-      const extracted = { id: ingest.document.id, title: ingest.document.title, pageCount: ingest.document.pageCount, pages: ingest.document.pages };
-
-      // Visual material: every page as an image, figures cropped. Best
-      // effort — cards are still generated when rendering is unavailable.
-      let visuals: PageVisuals[] = [];
-      let visualsFailed = false;
-      let figures = 0;
-      setProgress({ stage: "visuals", message: "Extracting visual material…", done: 0, total: ingest.document.pageCount });
-      try {
-        const rendered = await renderPdfDocument(await file.arrayBuffer(), {
-          documentId: extracted.id,
-          onProgress: (p) => setProgress({ stage: "visuals", message: "Extracting visual material…", done: p.done, total: p.total }),
-        });
-        visuals = rendered.visuals;
-        figures = rendered.assets.filter((a) => a.kind === "figure").length;
-        const stored = await putAssets(rendered.assets);
-        if (!stored) visualsFailed = true;
-      } catch (cause) {
-        // Cards do not depend on images; the reason stays in the console.
-        console.warn("[medrecall] page rendering unavailable:", cause instanceof Error ? cause.message : cause);
-        visualsFailed = true;
-        visuals = [];
-      }
+      const { extracted, visuals, visualsFailed, figures } = read;
 
       setProgress({ stage: "generating", message: "Generating cards…" });
       const generated = await requestCards({
         courseId: curriculum.course.id,
         lectureId: lecture.id,
-        document: { id: extracted.id, title: extracted.title, pages: extracted.pages },
-        visuals: visualsFailed ? [] : visuals,
+        documents: [{ id: extracted.id, title: extracted.title, pages: extracted.pages, visuals }],
         language: chosenLanguage,
         count,
         existing: existingCardsOf(curriculum, lecture.id),
@@ -138,7 +119,7 @@ export function UploadFlow() {
           document: toSourceDocument(extracted, lecture.id),
           chunks,
           ingestedAt: new Date().toISOString(),
-          visuals: visualsFailed ? [] : visuals,
+          visuals,
         },
         concepts: generated.concepts,
         language: chosenLanguage,
@@ -148,8 +129,10 @@ export function UploadFlow() {
         produced: generated.concepts.length,
         requested: count === "auto" ? "auto" : String(count),
         shortfall: generated.shortfall,
-        figures: visualsFailed ? 0 : figures,
+        figures,
         visualsFailed,
+        coverage: generated.coverage,
+        language: chosenLanguage,
       });
       setProgress({ stage: "done", message: `Ready — ${generated.concepts.length} ${generated.concepts.length === 1 ? "card" : "cards"}.` });
     } catch {
@@ -247,6 +230,8 @@ export function UploadFlow() {
                 data-produced={result.produced}
                 data-shortfall={result.shortfall}
                 data-figures={result.figures}
+                data-arabic={result.coverage.arabic}
+                data-partial={result.coverage.partial}
                 className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 p-5"
               >
                 <p className="text-lg font-bold text-emerald-900">{progress.message}</p>
@@ -257,6 +242,7 @@ export function UploadFlow() {
                       ? "Page images could not be rendered in this browser; cards were made from the text."
                       : "No usable figures were found in this PDF; cards were made from the text."}
                 </p>
+                <ArabicCoverageNote language={result.language} coverage={result.coverage} testId="coverage-note" />
                 {result.shortfall > 0 && (
                   <p data-testid="shortfall-note" className="mt-2 text-sm text-emerald-900">
                     You asked for {result.requested}; this lecture supports {result.produced} distinct cards without repeating facts.

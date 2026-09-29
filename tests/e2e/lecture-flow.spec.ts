@@ -93,10 +93,25 @@ test("Cell Injury.pdf → 40 mixed Arabic/English cards with original figures �
   await expect(img).toBeVisible();
   expect(await img.evaluate((el) => (el as HTMLImageElement).naturalWidth)).toBeGreaterThan(50);
   await expect(img).toHaveAttribute("data-page", /^[456]$/);
-  // Arabic scaffolding around English terms, laid out right-to-left.
+  // Image QUESTIONS only where a caption establishes what the picture shows
+  // (the histology images on pages 5 and 6), answered by that caption. The
+  // labelled flowchart on page 4 would show its own answer, so it only
+  // illustrates the back of the mechanism cards.
+  const imageQuestions = page.locator('[data-testid^="card-"][data-kind="IMAGE"]');
+  await expect(imageQuestions).toHaveCount(2);
+  expect(await imageQuestions.evaluateAll((els) => els.map((el) => el.getAttribute("data-page")))).toEqual(["5", "6"]);
+  const hydropicId = (await imageQuestions.first().getAttribute("data-testid"))!.replace("card-", "");
+  await expect(page.getByTestId(`card-front-${hydropicId}`)).toHaveText("ماذا تُظهر هذه الصورة؟");
+  await expect(page.getByTestId(`card-back-${hydropicId}`)).toContainText("Hydropic change of renal tubular cells");
+  await expect(page.locator('[data-testid^="card-"][data-kind="MECHANISM"][data-page="4"][data-has-image="true"]')).not.toHaveCount(0);
+  // Mixed mode: Arabic sentences — question AND answer — with English medical terms, right-to-left.
+  const hypoxia = page.locator('[data-testid^="card-front-"]').filter({ hasText: "السبب الأكثر شيوعًا لـ cell injury" });
+  await expect(hypoxia).toHaveCount(1);
+  const hypoxiaId = (await hypoxia.getAttribute("data-testid"))!.replace("card-front-", "");
+  await expect(page.getByTestId(`card-back-${hypoxiaId}`)).toHaveText("Hypoxia هو السبب الأكثر شيوعًا لـ cell injury.");
+  expect(await hypoxia.evaluate((el) => getComputedStyle(el).direction)).toBe("rtl");
   const front = page.getByTestId(`card-front-${(await drafts.first().getAttribute("data-testid"))!.replace("card-", "")}`);
   await expect(front).toContainText(/[؀-ۿ]/);
-  expect(await front.evaluate((el) => getComputedStyle(el).direction)).toBe("rtl");
 
   // Edit one card's back, then approve everything.
   const firstId = (await drafts.first().getAttribute("data-testid"))!.replace("card-", "");
@@ -141,6 +156,13 @@ test("Cell Injury.pdf → 40 mixed Arabic/English cards with original figures �
     if ((await card.getAttribute("data-queue")) === "NEW" && (await page.getByTestId("card-image-front").count()) > 0) {
       sawImage = true;
       expect(await page.getByTestId("card-image-front").evaluate((el) => (el as HTMLImageElement).naturalWidth)).toBeGreaterThan(50);
+      // The answer is what the image's caption says, and the source is the image's own page.
+      await page.getByTestId("show-answer").click();
+      await expect(page.getByTestId("card-back")).toContainText(/Hydropic change|Steatosis/);
+      const imagePage = await page.getByTestId("card-image-front").getAttribute("data-page");
+      await expect(page.getByTestId("card-source")).toContainText(`page ${imagePage}`);
+      await page.getByTestId("rate-easy").click();
+      continue;
     }
     await page.getByTestId("show-answer").click();
     await page.getByTestId(sawImage ? "rate-easy" : "rate-good").click();
@@ -195,9 +217,13 @@ test("English and Arabic modes, custom and auto counts, rename, generate more", 
   await page.getByTestId("generate-more-button").click();
   await expect(page.getByTestId("generate-more-result")).toBeVisible({ timeout: 30_000 });
   const remaining = Number(await page.getByTestId("generate-more-result").getAttribute("data-produced"));
+  await page.getByTestId("cards-filter-ALL").click();
   await expect(page.locator('[data-testid^="card-"][data-status]')).toHaveCount(6 + added + remaining);
-  const fronts = await page.locator('[data-testid^="card-front-"]').allTextContents();
-  expect(new Set(fronts).size).toBe(fronts.length);
+  // No question twice (an image question is told apart by the image it shows).
+  const questions = await page.locator('[data-testid^="card-"][data-status]').evaluateAll((els) =>
+    els.map((el) => `${el.querySelector('[data-testid^="card-front-"]')?.textContent}|${el.getAttribute("data-kind") === "IMAGE" ? el.getAttribute("data-page") : ""}`),
+  );
+  expect(new Set(questions).size).toBe(questions.length);
   await page.getByTestId("generate-more-button").click();
   await expect(page.getByTestId("generate-more-result")).toHaveAttribute("data-produced", "0", { timeout: 30_000 });
 
@@ -241,6 +267,7 @@ test("old Cell Injury cards that are due come back inside the Inflammation sessi
   await page.goto(`/study/${inflammation.lectureId}`);
   await expect(page.getByTestId("review-note")).toContainText("8 reviews from earlier lectures");
   const origins: string[] = [];
+  const reviewedIds: string[] = [];
   let ratedOld = 0;
   let checkedOldProvenance = false;
   for (let i = 0; i < 24; i++) {
@@ -255,6 +282,7 @@ test("old Cell Injury cards that are due come back inside the Inflammation sessi
       await expect(page.getByTestId("card-origin")).toHaveCount(0);
       await expect(card).toHaveAttribute("data-lecture-id", cell.lectureId);
       expect(cellItems).toContain(await card.getAttribute("data-item-id"));
+      reviewedIds.push((await card.getAttribute("data-item-id"))!);
     } else {
       await expect(card).toHaveAttribute("data-lecture-id", inflammation.lectureId);
     }
@@ -269,7 +297,8 @@ test("old Cell Injury cards that are due come back inside the Inflammation sessi
       await page.getByTestId("rate-good").click();
     }
   }
-  // One old review after every four current cards.
+  // One old review after every four current cards; a card rated Hard never comes back in the same session.
+  expect(new Set(reviewedIds).size).toBe(reviewedIds.length);
   expect(origins.slice(0, 5)).toEqual(["current", "current", "current", "current", "review"]);
   expect(origins.slice(5, 10)).toEqual(["current", "current", "current", "current", "review"]);
   expect(checkedOldProvenance).toBe(true);
@@ -293,6 +322,141 @@ test("old Cell Injury cards that are due come back inside the Inflammation sessi
   await page.reload();
   await expect(page.getByTestId("study-card").or(page.getByTestId("study-done")).first()).toBeVisible();
   expect(Object.keys((await sidecar(page))!.cards).length).toBe(Object.keys(after.cards).length);
+});
+
+test("Arabic mode writes Arabic answers with Arabic medical terms; the UI discloses what stayed English", async ({ page }) => {
+  await page.goto("/upload");
+  await page.getByTestId("upload-file").setInputFiles(CELL_INJURY);
+  await page.getByTestId("lang-ar").check();
+  await expect(page.getByTestId("lang-language-note")).toContainText("written in Arabic");
+  await page.getByTestId("count-custom").check();
+  await page.getByTestId("count-custom-value").fill("12");
+  await page.getByTestId("generate-button").click();
+  const done = page.getByTestId("generation-done");
+  await expect(done).toBeVisible({ timeout: 60_000 });
+  const lectureId = (await done.getAttribute("data-lecture-id"))!;
+  const arabic = Number(await done.getAttribute("data-arabic"));
+  const partial = Number(await done.getAttribute("data-partial"));
+  expect(arabic + partial).toBe(12);
+  await expect(page.getByTestId("coverage-note")).toContainText(`${arabic} cards are written as Arabic sentences`);
+  await page.goto(`/lectures/${lectureId}`);
+  const hypoxia = page.locator('[data-testid^="card-front-"]').filter({ hasText: "إصابة الخلية (cell injury)" }).first();
+  const id = (await hypoxia.getAttribute("data-testid"))!.replace("card-front-", "");
+  await expect(hypoxia).toHaveText("ما هو السبب الأكثر شيوعًا لـ إصابة الخلية (cell injury)؟");
+  await expect(page.getByTestId(`card-back-${id}`)).toHaveText("نقص الأكسجة (Hypoxia) هو السبب الأكثر شيوعًا لـ إصابة الخلية (cell injury).");
+  // Every question in Arabic mode is Arabic; no "ما هو <English sentence>؟".
+  for (const text of await page.locator('[data-testid^="card-front-"]').allTextContents()) {
+    expect(text).toMatch(/[؀-ۿ]/);
+    const wrapped = /^ما هو (.+)؟$/.exec(text)?.[1] ?? "";
+    expect(wrapped.replace(/\([^)]*\)/g, "").split(/\s+/).filter((w) => /^[A-Za-z]/.test(w)).length).toBeLessThanOrEqual(4);
+  }
+  // View source still shows the lecture's own English sentence.
+  await page.getByTestId(`view-source-${id}`).locator("summary").click();
+  await expect(page.getByTestId(`source-excerpt-${id}`)).toHaveText("Hypoxia is the most common cause of cell injury.");
+});
+
+test("the reviews-per-day limit caps old reviews mixed into a new lecture", async ({ page }) => {
+  const cell = await uploadLecture(page, CELL_INJURY, { language: "en", count: "custom", custom: "8" });
+  await page.goto(`/lectures/${cell.lectureId}`);
+  await page.getByTestId("approve-all").click();
+  await page.goto(`/study/${cell.lectureId}`);
+  await studyAll(page, "easy");
+  await page.evaluate((key) => {
+    const stored = JSON.parse(localStorage.getItem(key)!);
+    for (const card of Object.values(stored.cards) as { schedule: { due: string } }[]) card.schedule.due = new Date(Date.now() - 2 * 24 * 3_600_000).toISOString();
+    // A new day: yesterday's tally no longer counts.
+    delete stored.studyDay;
+    localStorage.setItem(key, JSON.stringify(stored));
+  }, CARDS_KEY);
+  const inflammation = await uploadLecture(page, INFLAMMATION, { language: "en", count: "custom", custom: "8" });
+  await page.goto(`/lectures/${inflammation.lectureId}`);
+  await page.getByTestId("approve-all").click();
+
+  // Reviews per day: 1 (the existing Study option).
+  await page.goto("/study");
+  await page.getByTestId("limit-reviews").fill("1");
+  await page.getByTestId("save-limits").click();
+  await page.goto(`/study/${inflammation.lectureId}`);
+  await expect(page.getByTestId("review-note")).toContainText("1 review from earlier lectures");
+  let reviews = 0;
+  for (let i = 0; i < 20; i++) {
+    if (await page.getByTestId("study-done").isVisible().catch(() => false)) break;
+    await expect(page.getByTestId("study-card")).toBeVisible();
+    if ((await page.getByTestId("study-card").getAttribute("data-origin")) === "review") reviews++;
+    await page.getByTestId("show-answer").click();
+    await page.getByTestId("rate-easy").click();
+  }
+  expect(reviews).toBe(1);
+
+  // Limit 0: none.
+  await page.goto("/study");
+  await page.getByTestId("limit-reviews").fill("0");
+  await page.getByTestId("save-limits").click();
+  await page.goto(`/study/${inflammation.lectureId}`);
+  await expect(page.getByTestId("study-card").or(page.getByTestId("study-done")).first()).toBeVisible();
+  await expect(page.getByTestId("review-note")).toHaveCount(0);
+});
+
+test("a lecture with two PDFs: generate from the second, then from all material — provenance kept, first PDF's cards untouched", async ({ page }) => {
+  const a = await uploadLecture(page, CELL_INJURY, { language: "en", count: "custom", custom: "6" });
+  await page.goto(`/lectures/${a.lectureId}`);
+  await page.getByTestId("approve-all").click();
+  // Study one card of A.
+  await page.goto(`/study/${a.lectureId}`);
+  await page.getByTestId("show-answer").click();
+  await page.getByTestId("rate-good").click();
+  const before = (await sidecar(page))!;
+  const aDocument = (await page.evaluate(() => JSON.parse(localStorage.getItem("medrecall.curriculum.v1")!).ingested[0].document.id)) as string;
+
+  // Add B to the same lecture.
+  await page.goto(`/lectures/${a.lectureId}`);
+  await page.getByTestId("add-pdf-open").click();
+  await page.getByTestId("add-pdf-file").setInputFiles(INFLAMMATION);
+  const added = page.getByTestId("add-pdf-done");
+  await expect(added).toBeVisible({ timeout: 60_000 });
+  const bDocument = (await added.getAttribute("data-document-id"))!;
+  expect(bDocument).not.toBe(aDocument);
+
+  // Generate from B only.
+  await expect(page.getByTestId("gm-source")).toHaveValue(bDocument);
+  await page.getByTestId("gm-count-custom").check();
+  await page.getByTestId("gm-count-custom-value").fill("4");
+  await page.getByTestId("generate-more-button").click();
+  await expect(page.getByTestId("generate-more-result")).toHaveAttribute("data-produced", "4", { timeout: 30_000 });
+  await page.getByTestId("cards-filter-ALL").click();
+  await expect(page.locator(`[data-testid^="card-"][data-document="${bDocument}"]`)).toHaveCount(4);
+  await expect(page.locator(`[data-testid^="card-"][data-document="${aDocument}"]`)).toHaveCount(6);
+  await expect(page.locator(`[data-testid^="card-"][data-document="${aDocument}"][data-status="ACTIVE"]`)).toHaveCount(6);
+  // B's cards cite B's pages.
+  const bCard = page.locator(`[data-testid^="card-"][data-document="${bDocument}"]`).first();
+  const bId = (await bCard.getAttribute("data-testid"))!.replace("card-", "");
+  await page.getByTestId(`view-source-${bId}`).locator("summary").click();
+  await expect(page.getByTestId(`view-source-${bId}`)).toContainText("Inflammation, page");
+  // A's studied card kept its FSRS history.
+  const mid = (await sidecar(page))!;
+  expect(mid.cards).toEqual(before.cards);
+
+  // All lecture material: new cards from both, no duplicates of anything existing.
+  await page.getByTestId("gm-source").selectOption("all");
+  await page.getByTestId("gm-count-auto").check();
+  await page.getByTestId("generate-more-button").click();
+  await expect(page.getByTestId("generate-more-result")).toBeVisible({ timeout: 30_000 });
+  await page.getByTestId("cards-filter-ALL").click();
+  const fronts = await page.locator('[data-testid^="card-front-"]').allTextContents();
+  const backs = await page.locator('[data-testid^="card-back-"]').allTextContents();
+  expect(new Set(backs).size).toBe(backs.length);
+  expect(fronts.length).toBeGreaterThan(10);
+  await expect(page.locator(`[data-testid^="card-"][data-document="${aDocument}"]`)).not.toHaveCount(6);
+
+  // Refresh: both PDFs and every card are still there.
+  const total = await page.locator('[data-testid^="card-"][data-status]').count();
+  await page.reload();
+  await page.getByTestId("cards-filter-ALL").click();
+  await expect(page.locator('[data-testid^="card-"][data-status]')).toHaveCount(total);
+  await page.getByTestId("source-toggle").click();
+  await expect(page.getByTestId("source-pages")).toContainText("Cell Injury");
+  await expect(page.getByTestId("source-pages")).toContainText("Inflammation");
+  expect((await sidecar(page))!.cards).toEqual(before.cards);
 });
 
 test("Reset removes lectures, cards and page images together", async ({ page }) => {

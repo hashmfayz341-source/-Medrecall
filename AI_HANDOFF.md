@@ -160,9 +160,14 @@ carries only a `CardImage` reference with provenance. The worker is served
 from `public/pdf.worker.min.mjs` by `scripts/copy-pdf-worker.mjs`
 (prebuild/predev/postinstall) — bundler-emitted worker URLs did not work in
 the production build. The session composer (`lib/engine/session.ts`) orders
-what is shown; it never reads or writes a schedule. Language modes change
-the question scaffolding only; the deterministic generator never translates
-source text.
+what is shown; it never reads or writes a schedule, it respects the
+existing reviews-per-day allowance, and an old card rated in the session
+returns only when FSRS makes it due. Arabic cards are rendered from the fact's
+structure (`lib/generation/arabic.ts`): noun phrases whole or as written,
+never word by word, and never "ما هو <English sentence>؟"; disclose
+`coverage.partial`. An image QUESTION needs a caption outside a raster figure
+and an answer not printed inside it; diagrams go on the back of related
+cards only. Generation takes `documents[]`; keep each card's own provenance.
 
 **18. Duplicate merges are reviewer decisions in the overrides (AD-27).**
 Detection (`findDuplicateCandidates`) is textual and deterministic — never
@@ -305,7 +310,7 @@ above that interface knows where state lives.
 npm run lint && npm run typecheck && npm run test && npm run build && npm run e2e
 ```
 
-583 unit tests, 172 E2E tests (86 per project, iPad and desktop viewports). Mixed-version tests need the base commit 482824c in local git history (a normal clone has it). The E2E suite
+619 unit tests, 178 E2E tests (89 per project, iPad and desktop viewports). Mixed-version tests need the base commit 482824c in local git history (a normal clone has it). The E2E suite
 drives the real UI through the complete demo journey, including the deliberate
 ATP-depletion failure.
 

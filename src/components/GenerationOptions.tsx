@@ -47,7 +47,40 @@ export function LanguagePicker({
           </label>
         ))}
       </div>
+      {value !== "en" && (
+        <p data-testid={`${prefix}-language-note`} className="mt-2 text-sm text-ink-500">
+          {value === "ar"
+            ? "Questions and answers are written in Arabic. Medical terms MedRecall's built-in vocabulary knows are given in Arabic with the English in brackets; other terms stay in English. "
+            : "Questions and answers are written in Arabic; medical terminology stays in English. "}
+          Sentences outside the patterns the built-in generator supports keep part of the lecture&apos;s English — the result says how many. Full
+          translation of every sentence needs a configured generation provider.
+        </p>
+      )}
     </fieldset>
+  );
+}
+
+/**
+ * After generation in an Arabic mode: how many cards are Arabic sentences,
+ * and how many kept part of the lecture's English. Never hidden.
+ */
+export function ArabicCoverageNote({
+  language,
+  coverage,
+  testId,
+}: {
+  language: CardLanguage;
+  coverage: { arabic: number; partial: number };
+  testId: string;
+}) {
+  if (language === "en") return null;
+  return (
+    <p data-testid={testId} data-arabic={coverage.arabic} data-partial={coverage.partial} className="mt-1 text-sm text-emerald-900">
+      {coverage.arabic} {coverage.arabic === 1 ? "card is" : "cards are"} written as Arabic sentences
+      {coverage.partial > 0
+        ? `; ${coverage.partial} ${coverage.partial === 1 ? "keeps" : "keep"} part of the lecture's English wording (outside the built-in generator's patterns — review or edit them).`
+        : "."}
+    </p>
   );
 }
 

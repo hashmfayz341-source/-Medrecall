@@ -46,8 +46,15 @@ the internal layer and the Tutor remains a separate feature.
       neutral *Review* chip before the answer, origin after; ratings update
       the old card's own history
 - [x] RTL layout for Arabic prompts (`dir="auto"`), iPad-sized targets
-- [ ] Not in this step: translated explanations (needs a hosted generator
-      behind Stage B abuse control), OCR, figure cropping beyond geometry
+- [x] Merge-gate fixes: Arabic cards rendered from the fact's structure
+      (Arabic questions and answers; mixed keeps medical terms English;
+      partial cards disclosed); image questions only when a caption grounds
+      the answer; old cards rated in a session return only when due;
+      interleaving within the reviews-per-day limit; Generate more over a
+      lecture's several PDFs
+- [ ] Not in this step: full translation of every sentence (needs a hosted
+      generator behind Stage B abuse control), OCR, figure understanding
+      beyond captions and labels
 
 ## Milestone 1 — Deterministic tutor ✅
 
