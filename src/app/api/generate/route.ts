@@ -28,7 +28,7 @@ const str = (v: unknown, max = 200_000): v is string => typeof v === "string" &&
 const fraction = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
 
 function pageShape(v: unknown): v is Page {
-  return record(v) && Number.isInteger(v.number) && Number(v.number) >= 1 && str(v.title, 500) && str(v.text);
+  return record(v) && Number.isInteger(v.number) && Number(v.number) >= 1 && str(v.title, 500) && str(v.text) && (v.layout === undefined || v.layout === "blocks");
 }
 function figureShape(v: unknown): v is FigureCandidate {
   return record(v) && (v.kind === "raster" || v.kind === "diagram" || v.kind === "page") && record(v.region) &&

@@ -267,12 +267,15 @@ describe("generation", () => {
     expect(card(ar, "Patterns of necrosis").prompt).toBe("اذكر أنماط النخر (necrosis).");
     expect(card(ar, "Patterns of necrosis").explanation).toContain("النخر التخثري (Coagulative necrosis)");
     expect(card(mixed, "Patterns of necrosis").explanation).toContain("Coagulative necrosis،");
-    // English is untouched: no Arabic anywhere, answers are the lecture's sentences.
+    // English is untouched: no Arabic anywhere. The answer is the lecture's own
+    // words for the one thing asked; the whole sentence is the cited source.
     for (const c of en.concepts) {
       expect(hasArabic(c.retrievalItems[0]!.prompt)).toBe(false);
       expect(hasArabic(c.retrievalItems[0]!.explanation)).toBe(false);
     }
-    expect(card(en, "Apoptosis").explanation).toBe("Apoptosis is programmed cell death mediated by caspases.");
+    const apoptosis = en.concepts.find((c) => c.title === "Apoptosis" && c.retrievalItems[0]!.prompt === "What is apoptosis?")!;
+    expect(apoptosis.retrievalItems[0]!.explanation).toBe("Programmed cell death mediated by caspases");
+    expect(apoptosis.source.excerpt).toBe("Apoptosis is programmed cell death mediated by caspases.");
     // Arabic modes: every question is Arabic, and never "ما هو <an English sentence>؟".
     for (const out of [ar, mixed]) {
       for (const c of out.concepts) {

@@ -14,7 +14,8 @@ import { buildChunks, toSourceDocument } from "@/lib/ingestion/extractor";
 import { PdfReadError, readLecturePdf } from "@/lib/generation/upload";
 import { buildStudyQueue, studyCardsForLecture } from "@/lib/engine/study";
 import { eligibleOldReviews } from "@/lib/engine/session";
-import { existingCardsOf, parseCount, requestCards } from "@/lib/generation/client";
+import { existingCardsOf, parseCount, requestCards, shortfallReasonText } from "@/lib/generation/client";
+import type { GeneratedCards } from "@/lib/generation/generate";
 import { pageAssetId } from "@/lib/visuals/analyze";
 import type { CardLanguage, Concept, ConceptStatus, RetrievalKind } from "@/lib/domain/types";
 
@@ -75,7 +76,7 @@ export function LectureView({ lectureId }: { lectureId: string }) {
   const [moreState, setMoreState] = useState<
     | { kind: "idle" }
     | { kind: "working" }
-    | { kind: "done"; produced: number; shortfall: number; coverage: { arabic: number; partial: number }; language: CardLanguage }
+    | { kind: "done"; produced: number; shortfall: number; shortfallReason: GeneratedCards["shortfallReason"]; coverage: { arabic: number; partial: number }; language: CardLanguage }
     | { kind: "error"; message: string }
   >({ kind: "idle" });
   /** Which lecture material Generate more reads: every document ("all"), or one. */
@@ -169,7 +170,7 @@ export function LectureView({ lectureId }: { lectureId: string }) {
       });
       appendGeneratedConcepts(sources.map((d) => d.id), generated.concepts);
       if (chosen !== language) setLectureCardLanguage(lectureId, chosen);
-      setMoreState({ kind: "done", produced: generated.concepts.length, shortfall: generated.shortfall, coverage: generated.coverage, language: chosen });
+      setMoreState({ kind: "done", produced: generated.concepts.length, shortfall: generated.shortfall, shortfallReason: generated.shortfallReason ?? null, coverage: generated.coverage, language: chosen });
       if (generated.concepts.length > 0) setFilter("DRAFT");
     } catch (cause) {
       setMoreState({ kind: "error", message: cause instanceof Error ? cause.message : "Card generation failed." });
@@ -347,7 +348,7 @@ export function LectureView({ lectureId }: { lectureId: string }) {
                   {moreState.produced === 0
                     ? "Nothing new: this lecture's distinct facts are already covered."
                     : `${moreState.produced} new ${moreState.produced === 1 ? "card" : "cards"} added as drafts.`}
-                  {moreState.shortfall > 0 && ` Asked for ${moreState.produced + moreState.shortfall}; only ${moreState.produced} more distinct facts were available.`}
+                  {moreState.shortfall > 0 && ` Asked for ${moreState.produced + moreState.shortfall}; only ${moreState.produced} more distinct facts were available.${shortfallReasonText(moreState.shortfallReason)}`}
                 </p>
               )}
               {moreState.kind === "done" && moreState.produced > 0 && (

@@ -13,7 +13,7 @@ export interface GenerationRequest {
   courseId: string;
   lectureId: string;
   /** The lecture documents to generate from, each with the figures found in it. */
-  documents: { id: string; title: string; pages: { number: number; title: string; text: string }[]; visuals?: readonly PageVisuals[] }[];
+  documents: { id: string; title: string; pages: { number: number; title: string; text: string; layout?: "blocks" }[]; visuals?: readonly PageVisuals[] }[];
   language: CardLanguage;
   count: CardCount;
   existing: readonly ExistingCard[];
@@ -43,6 +43,18 @@ export async function requestCards(request: GenerationRequest): Promise<Generate
   const result = payload as GeneratedCards;
   // Whatever came back, it enters as DRAFT.
   return { ...result, concepts: result.concepts.map((c: Concept) => ({ ...c, status: "DRAFT" as const })) };
+}
+
+/**
+ * Why fewer cards than asked for were made, in one sentence: the lecture
+ * does not state more distinct facts, or it does but they could not be read
+ * reliably enough to make trustworthy cards (they are left out, never
+ * guessed or padded).
+ */
+export function shortfallReasonText(reason: GeneratedCards["shortfallReason"] | undefined): string {
+  if (reason === "extraction") return " The lecture has more material, but some of it could not be read reliably (for example an unclear table or sentence), so it was left out rather than guessed.";
+  if (reason === "source") return " The lecture does not state more distinct facts; nothing was padded.";
+  return "";
 }
 
 /** Parse the count control: a preset, a custom whole number, or AUTO. */

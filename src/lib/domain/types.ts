@@ -52,6 +52,13 @@ export interface Page {
   number: number;
   title: string;
   text: string;
+  /**
+   * "blocks": `text` keeps the page's source structure (lib/ingestion/layout):
+   * one logical unit per line (a paragraph, a bullet item, a caption), a
+   * blank line between blocks, table rows as tab-separated cells. Absent on
+   * pages extracted before structure was kept: their lines are visual lines.
+   */
+  layout?: "blocks";
 }
 
 export interface SourceDocument {

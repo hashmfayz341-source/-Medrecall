@@ -8,7 +8,8 @@ import { ArabicCoverageNote, CountPicker, LanguagePicker } from "./GenerationOpt
 import { buildChunks, toSourceDocument } from "@/lib/ingestion/extractor";
 import { nextLectureOrder } from "@/lib/domain/curriculum";
 import { lectureIdFor, titleFromFileName } from "@/lib/domain/titles";
-import { existingCardsOf, parseCount, requestCards } from "@/lib/generation/client";
+import { existingCardsOf, parseCount, requestCards, shortfallReasonText } from "@/lib/generation/client";
+import type { GeneratedCards } from "@/lib/generation/generate";
 import { PdfReadError, readLecturePdf, type ReadPdf } from "@/lib/generation/upload";
 import type { CardLanguage, Lecture } from "@/lib/domain/types";
 
@@ -50,6 +51,7 @@ export function UploadFlow() {
     produced: number;
     requested: string;
     shortfall: number;
+    shortfallReason: GeneratedCards["shortfallReason"];
     figures: number;
     visualsFailed: boolean;
     coverage: { arabic: number; partial: number };
@@ -129,6 +131,7 @@ export function UploadFlow() {
         produced: generated.concepts.length,
         requested: count === "auto" ? "auto" : String(count),
         shortfall: generated.shortfall,
+        shortfallReason: generated.shortfallReason ?? null,
         figures,
         visualsFailed,
         coverage: generated.coverage,
@@ -244,8 +247,9 @@ export function UploadFlow() {
                 </p>
                 <ArabicCoverageNote language={result.language} coverage={result.coverage} testId="coverage-note" />
                 {result.shortfall > 0 && (
-                  <p data-testid="shortfall-note" className="mt-2 text-sm text-emerald-900">
+                  <p data-testid="shortfall-note" data-reason={result.shortfallReason ?? ""} className="mt-2 text-sm text-emerald-900">
                     You asked for {result.requested}; this lecture supports {result.produced} distinct cards without repeating facts.
+                    {shortfallReasonText(result.shortfallReason)}
                   </p>
                 )}
                 <div className="mt-4 flex flex-wrap gap-3">
