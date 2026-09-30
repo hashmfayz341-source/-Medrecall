@@ -180,6 +180,8 @@ function continues(open: Open, s: Segment, columnWidth: number): boolean {
   if (!full && !lowerWrap && !OPEN_END.test(last.text)) return false;
   // A capitalised line after a short one that ends a phrase is a new item ("Bronchospasm" / "Bradycardia").
   if (/^[A-Z]/.test(s.text) && !TERMINAL.test(last.text) && !OPEN_END.test(last.text) && (!full || wordsIn(last.text) <= 4)) return false;
+  // The widest line of its box may be a whole item, not a wrap: a capitalised line after it, with nothing unfinished, is new.
+  if (/^[A-Z]/.test(s.text) && !TERMINAL.test(last.text) && !OPEN_END.test(last.text) && lastWidth >= columnWidth - size * 0.5) return false;
   return true;
 }
 

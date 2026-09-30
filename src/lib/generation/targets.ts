@@ -74,7 +74,7 @@ const CAUSAL = new Set(["cause", "lead", "result", "produce", "trigger", "induce
 const INTRANSITIVE = new Set(["accumulate", "predominate", "migrate", "progress", "heal", "regress", "decline", "rise", "fall", "drop", "respond", "participate", "contribute", "originate", "evolve", "act", "work", "depend", "converge", "remain", "become", "appear"]);
 const TIMING_VERBS = new Set(["occur", "develop", "arise", "appear", "peak", "begin", "start", "persist", "recur"]);
 const NUMBER_WORD = /^(two|three|four|five|six|seven|eight|nine|ten|\d+)$/i;
-const TIME_START = /^(within|after|before|during|by|at|over|for|about|around|up to|\d)/i;
+const TIME_START = /^(within|after|before|during|by|over|for|about|around|up to|\d|at\s+(?:\d|birth|night|rest|onset|the (?:onset|time|end|start)))/i;
 const ADJECTIVE_PHRASE = /^\S+(?:ive|ant|ent|ful|able|ible|al|ous|ic|ar|ary|ile)\s+(?:to|in|for|with|than|from|on|of|against)\b/i;
 /** A passive participle: "-ed/-en" followed by a preposition, "by", an adverb or nothing ("is hydrolyzed in …"), not by a noun ("programmed cell death"). */
 const PARTICIPLE = /^\S+(?:ed|en)(?:\s+(?:by|in|at|on|to|from|into|within|with|as|for|during|after|before|through|via|\w+ly)\b|$)/i;
@@ -172,6 +172,8 @@ function sentenceTargets(fact: Fact): Draft[] {
     } else if ((x = m(/^used\s+(.+)$/i))) {
       const use = useTarget(S, aux, x[1]!);
       if (use) out.push({ ...use, importance: 2.5 + core });
+    } else if ((x = m(/^(?:also\s+)?(called|termed|known as|referred to as)\s+(.+)$/i))) {
+      out.push({ subject: S, relation: "identity", fact: x[2]!, question: `What ${aux} ${Sq} ${x[1]!.toLowerCase()}?`, importance: 2.3 + core });
     } else if ((x = m(/^given\s+to\s+(.+)$/i))) {
       out.push({ subject: S, relation: "purpose", fact: x[1]!, question: `Fill in the blank: ${S} ${aux} given to ___.`, kind: "CLOZE", importance: 1.8 });
     } else if (PARTICIPLE.test(rest) && (x = m(/^(\S+(?:ed|en))\s+(.*?)\bby\s+(.+)$/i))) {
@@ -312,6 +314,9 @@ function tableTargets(fact: Fact): (Draft & { excerpt: string })[] {
   if (!header) return [];
   const out: (Draft & { excerpt: string })[] = [];
   const headerLine = header.join("\t");
+  // "Type of shock" | "Cardiogenic": the row is "cardiogenic shock".
+  const kindOf = /^(?:types?|kinds?|forms?|class(?:es)?|categor(?:y|ies)|classification)\s+of\s+(.+)$/i.exec(header[0]!.trim())?.[1];
+  const keyOf = (key: string) => (kindOf && words(key).length <= 2 && !normalize(key).includes(normalize(kindOf)) ? `${key} ${kindOf.replace(/s$/i, "")}` : key);
   const comparison = GENERIC_FEATURE.test(header[0]!.trim()) || (/\b(versus|vs\.?|compared)\b/i.test(fact.heading ?? "") && header.length <= 4);
   for (const row of body) {
     const excerpt = `${headerLine}\n${row.join("\t")}`;
@@ -331,10 +336,10 @@ function tableTargets(fact: Fact): (Draft & { excerpt: string })[] {
     } else {
       row.slice(1).forEach((cell, c) => {
         out.push({
-          subject: row[0]!,
+          subject: keyOf(row[0]!),
           relation: "table-cell",
           fact: cell,
-          question: `What is the ${label(header[c + 1]!)} of ${inQuestion(row[0]!)}?`,
+          question: `What is the ${label(header[c + 1]!)} of ${inQuestion(keyOf(row[0]!))}?`,
           importance: c === 0 ? 2.2 : 2,
           excerpt,
         });
@@ -414,14 +419,14 @@ export function rejectTarget(target: LearningTarget, page: Pick<Page, "text" | "
   const multi = target.relation === "list" || target.relation === "table-compare";
   const answerWords = words(a).length;
   if (!multi && answerWords > 30) return "answer-too-long";
+  // The blank must test knowledge: at least one content word.
+  const answerContent = contentOf(a);
+  if (answerContent.length === 0 && !/\d/.test(a)) return "meaningless-blank";
   if (target.relation !== "figure" && OPEN_END.test(trimEnd(a).toLowerCase())) return "truncated-answer";
   if (PRONOUN.test(a) || PRONOUN.test(target.subject)) return "pronoun";
   if (CONJUNCTION_START.test(a) || CONJUNCTION_START.test(target.subject)) return "orphan-fragment";
   if (!multi && /[.!?]\s+[A-Z]/.test(a)) return "multiple-targets";
   if (target.relation === "list" && (target.source.items ?? []).some((i) => OPEN_END.test(i.toLowerCase()) || words(i).length === 0)) return "incomplete-list";
-  // The blank must test knowledge: at least one content word.
-  const answerContent = contentOf(a);
-  if (answerContent.length === 0 && !/\d/.test(a)) return "meaningless-blank";
   // The question must not give the answer away.
   const qWords = new Set(normalize(q.replace(/___/g, " ")).split(" ").map(stemmed));
   if (target.relation !== "figure" && target.relation !== "comparison" && answerContent.length > 0 && answerContent.every((w) => qWords.has(stemmed(w)))) return "answer-leak";

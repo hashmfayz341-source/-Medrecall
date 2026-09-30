@@ -207,6 +207,10 @@ const NOUN_CONTEXT = /^(the|a|an|main|major|common|commonest|most|its|their|of|t
 /** Words ending in -s that are not plural nouns. */
 const NOT_PLURAL = new Set(["was", "has", "as", "its", "this", "thus", "gas", "plus", "does", "is", "us"]);
 
+/** A plural noun before a base-form verb: "-s" plurals and the Latin/Greek ones medicine uses ("thrombi", "emboli", "bacteria"). */
+const isPlural = (word: string) =>
+  (/s$/.test(word) && !/(?:ss|us|is)$/.test(word) && !NOT_PLURAL.has(word)) || /(?:[^aeiou]i|ae)$/.test(word) || /^(bacteria|criteria|data|phenomena|media|mitochondria|protozoa)$/.test(word);
+
 const bare = (token: string) => token.toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "");
 
 /** The base form of a verb token, or null when it is not a verb form this reader knows. */
@@ -272,7 +276,7 @@ export function parseClause(sentence: string): Clause | null {
       const plain = third ? null : verbBase(tokens[j]!, "base");
       if (third && !NOUN_CONTEXT.test(prev) && bare(tokens[j + 1] ?? "") !== "of") base = third;
       // A base form is a verb only after a plural subject ("Beta blockers decrease").
-      else if (plain && /s$/.test(prev) && !/(?:ss|us|is)$/.test(prev) && !NOT_PLURAL.has(prev) && !NOUN_CONTEXT.test(prev)) base = plain;
+      else if (plain && isPlural(prev) && !NOUN_CONTEXT.test(prev)) base = plain;
     }
     if (!base) continue;
     const subject = tokens.slice(0, i).join(" ");
@@ -501,18 +505,26 @@ export function extractFacts(pages: readonly Page[], visuals: readonly PageVisua
       // A list: at least three short items (labels, or "term: explanation"); at most one sentence item, used by its subject.
       const pairs = units.map((u) => (pairsAllowed ? asPair(u.text) : null));
       const fragments = units.map((u, i) => pairs[i] !== null || looksLikeListItem(u.text));
-      const sentences = units.filter((_, i) => !fragments[i]);
       const listHeading = context ?? (!headingUsedForList ? heading : null);
-      if (listHeading && units.length >= MIN_LIST_ITEMS && units.length <= MAX_LIST_ITEMS && sentences.length <= 1 && units.length - sentences.length >= MIN_LIST_ITEMS && !units.some((u) => u.sub)) {
-        const items = units.map((u, i) => {
+      // A list's items share one style: all bulleted or numbered, or all plain. When the styles
+      // are mixed, only a contiguous bulleted run is the list (a paragraph after it is not an item).
+      const mixed = units.some((u) => u.bullet) && units.some((u) => !u.bullet);
+      const listIdx = units.map((u, i) => (!mixed || u.bullet ? i : -1)).filter((i) => i >= 0);
+      const contiguous = listIdx.length > 0 && listIdx[listIdx.length - 1]! - listIdx[0]! === listIdx.length - 1;
+      const sentenceItems = listIdx.filter((i) => !fragments[i]).length;
+      if (
+        listHeading && contiguous && listIdx.length >= MIN_LIST_ITEMS && listIdx.length <= MAX_LIST_ITEMS &&
+        sentenceItems <= 1 && listIdx.length - sentenceItems >= MIN_LIST_ITEMS && !listIdx.some((i) => units[i]!.sub)
+      ) {
+        const items = listIdx.map((i) => {
           if (pairs[i]) return pairs[i]!.label;
-          if (fragments[i]) return cleanItem(u.text);
-          const clause = parseClause(cleanItem(u.text));
+          if (fragments[i]) return cleanItem(units[i]!.text);
+          const clause = parseClause(cleanItem(units[i]!.text));
           return clause && !VAGUE_SUBJECT.test(clause.subject) && wordCount(clause.subject) <= 6 ? clause.subject : null;
         });
         if (items.every((i): i is string => i !== null && i.length > 0)) {
           if (!context) headingUsedForList = true;
-          push({ kind: "list", heading, text: units.map((u) => u.text).join("\n"), term: listHeading, items, score: 1.5 + (CORE_SIGNALS.test(listHeading) ? 1 : 0), block: b, context: listHeading });
+          push({ kind: "list", heading, text: listIdx.map((i) => units[i]!.text).join("\n"), term: listHeading, items, score: 1.5 + (CORE_SIGNALS.test(listHeading) ? 1 : 0), block: b, context: listHeading });
         }
       }
 
