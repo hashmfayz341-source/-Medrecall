@@ -170,6 +170,24 @@ function figureAnswer(fact: Fact): string {
  * the supported patterns (disclosed, never hidden).
  */
 function arabicForTarget(target: LearningTarget, mode: ArabicMode): RenderedArabic {
+  const rendered = arabicStructured(target, mode);
+  // Never "ما هو <an English phrase>؟": a question that would wrap more than
+  // a medical term in English is asked as an Arabic fill-in-the-blank of the
+  // lecture's statement instead, with the answer as the blank.
+  const wrapped = /^ما هو (.+)؟$/.exec(rendered.prompt)?.[1];
+  if (wrapped && wrapped.replace(/\([^)]*\)/g, " ").split(/\s+/).filter((w) => /^[A-Za-z]/.test(w)).length > 4) {
+    const fact = target.source;
+    const statement =
+      fact.kind === "table"
+        ? `The ${/^What is the (.+) of .+\?$/.exec(target.question)?.[1] ?? "value"} of ${target.subject} is ${target.fact}`
+        : (fact.resolved ?? fact.text).replace(/^(therefore|however|thus|hence|also|in addition|moreover|furthermore|consequently),\s+/i, "");
+    const blank = statement.toLowerCase().includes(target.fact.toLowerCase()) ? statement.slice(statement.toLowerCase().indexOf(target.fact.toLowerCase()), statement.toLowerCase().indexOf(target.fact.toLowerCase()) + target.fact.length) : target.subject;
+    return renderCloze(statement.replace(/[.!?]+$/, ""), blank, mode);
+  }
+  return rendered;
+}
+
+function arabicStructured(target: LearningTarget, mode: ArabicMode): RenderedArabic {
   const fact = target.source;
   if (fact.kind === "list" || fact.kind === "figure") return arabicFor(fact, mode);
   if (fact.kind === "pair") return renderDefinition(fact.label ?? fact.term, `is ${fact.detail ?? ""}`, mode) ?? renderCloze(`${fact.label} is ${fact.detail}`, fact.label ?? fact.term, mode);

@@ -243,6 +243,34 @@ describe("atomic cards: one retrieval, a short answer in the lecture's words", (
     expect(answerTo(out, "Fill in the blank: Sweat glands are innervated by ___.")).toBe("Sympathetic cholinergic fibers");
   });
 
+  it("plural subjects with examples, prepositional verbs, participle + preposition, and abbreviations as written", () => {
+    const out = generate([
+      blocksPage(1, "Anticoagulants", [[
+        "Direct oral anticoagulants such as rivaroxaban inhibit factor Xa directly.",
+        "Carcinomas typically spread through lymphatics.",
+        "Heparin is monitored with the activated partial thromboplastin time.",
+      ]]),
+      blocksPage(2, "Monitoring", [["Drug\tMonitoring test", "Heparin\taPTT", "Warfarin\tPT/INR", "Dabigatran\tNone routinely"]]),
+    ]);
+    expect(answerTo(out, "What do direct oral anticoagulants such as rivaroxaban inhibit?")).toBe("Factor Xa directly");
+    expect(answerTo(out, "What do carcinomas typically spread through?")).toBe("Lymphatics");
+    expect(answerTo(out, "Fill in the blank: Heparin is monitored with ___.")).toBe("The activated partial thromboplastin time");
+    expect(answerTo(out, "What is the monitoring test of heparin?")).toBe("aPTT");
+  });
+
+  it("a second clause with its own subject is its own card; a trailing reason is not part of an answer", () => {
+    const out = generate([blocksPage(1, "Spread and safety", [[
+      "Carcinomas typically spread through lymphatics, whereas sarcomas typically spread through the blood.",
+      "Selectins mediate rolling and integrins mediate firm adhesion of leukocytes.",
+      "Warfarin is contraindicated in pregnancy because it is teratogenic.",
+    ]])]);
+    expect(answerTo(out, "What do carcinomas typically spread through?")).toBe("Lymphatics");
+    expect(answerTo(out, "What do sarcomas typically spread through?")).toBe("The blood");
+    expect(answerTo(out, "What do selectins mediate?")).toBe("Rolling");
+    expect(answerTo(out, "What do integrins mediate?")).toBe("Firm adhesion of leukocytes");
+    expect(answerTo(out, "Fill in the blank: Warfarin is contraindicated in ___.")).toBe("Pregnancy");
+  });
+
   const target = (over: Partial<LearningTarget>): LearningTarget => {
     const [fact] = extractFacts([blocksPage(1, "T", [["Cocaine blocks the reuptake of norepinephrine."]])]);
     return { subject: "Cocaine", relation: "action", fact: "The reuptake of norepinephrine", question: "What does cocaine block?", kind: "BASIC", sourcePage: 1, sourceExcerpt: "Cocaine blocks the reuptake of norepinephrine.", importance: 2, source: fact!, ordinal: 0, context: "", ...over };

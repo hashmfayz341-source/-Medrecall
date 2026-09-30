@@ -251,7 +251,9 @@ export function parseClause(sentence: string): Clause | null {
     let j = i;
     while (j < tokens.length - 1 && ADVERB.test(bare(tokens[j]!)) && !AUX_BE.has(bare(tokens[j]!))) j++;
     const word = bare(tokens[j]!);
-    const prev = bare(tokens[i - 1]!);
+    // "Direct oral anticoagulants such as rivaroxaban inhibit …": number agrees with the head noun before "such as".
+    const example = tokens.slice(0, i).map(bare).lastIndexOf("such");
+    const prev = example > 0 && bare(tokens[example + 1] ?? "") === "as" ? bare(tokens[example - 1]!) : bare(tokens[i - 1]!);
     let base: string | null = null;
     let aux: string | null = null;
     let end = j + 1;

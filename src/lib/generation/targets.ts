@@ -81,7 +81,8 @@ const PARTICIPLE = /^\S+(?:ed|en)(?:\s+(?:by|in|at|on|to|from|into|within|with|a
 
 const words = (text: string) => text.split(/\s+/).filter(Boolean);
 const trimEnd = (text: string) => text.replace(/[\s,;:]+$/, "").replace(/[.!?]+["”’)]*$/, "").trim();
-const capital = (text: string) => (text ? text.charAt(0).toUpperCase() + text.slice(1) : text);
+/** Sentence case for an answer, except a first word that is written with internal capitals ("aPTT", "cAMP", "pH", "mRNA"). */
+const capital = (text: string) => (text && !/^[a-z]+[A-Z]/.test(text) ? text.charAt(0).toUpperCase() + text.slice(1) : text);
 /**
  * Words the lecture capitalises in mid-sentence (names: "Fas", "Langhans",
  * "Congo"): kept capitalised inside a question. Set per generation run.
@@ -194,6 +195,9 @@ function sentenceTargets(fact: Fact): Draft[] {
       out.push({ subject: S, relation: "purpose", fact: x[1]!, question: `Fill in the blank: ${S} ${aux} given to ___.`, kind: "CLOZE", importance: 1.8 });
     } else if (PARTICIPLE.test(rest) && (x = m(/^(\S+(?:ed|en))\s+(.*?)\bby\s+(.+)$/i))) {
       out.push({ subject: S, relation: "passive", fact: x[3]!, question: `Fill in the blank: ${S} ${aux} ${x[1]} ${x[2]}by ___.`.replace(/\s+/g, " "), kind: "CLOZE", importance: 1.8 + core });
+    } else if ((x = m(/^(\S+(?:ed|en))\s+(with|in|at|on|to|from|as|into|for)\s+(.+)$/i))) {
+      // "Heparin is monitored with the aPTT": the blank is what follows the participle and its preposition.
+      out.push({ subject: S, relation: "passive", fact: x[3]!, question: `Fill in the blank: ${S} ${aux} ${x[1]} ${x[2]} ___.`, kind: "CLOZE", importance: 1.8 + core });
     } else if (PARTICIPLE.test(rest) || ADJECTIVE_PHRASE.test(rest) || /^(not|also|very|more|less|most|highly|usually|often)\b/i.test(rest)) {
       out.push({ subject: S, relation: "cloze", fact: rest, question: `Fill in the blank: ${S} ${aux} ___.`, kind: "CLOZE", importance: 1.2 });
     } else if (/^the\s/i.test(rest) && !/^(the|a|an)\s/i.test(S) && !NUMBER_WORD.test(words(S)[0] ?? "")) {
@@ -277,7 +281,7 @@ function sentenceTargets(fact: Fact): Draft[] {
     return out;
   }
   // Transitive verbs: "Cocaine blocks the reuptake of …" → "What does cocaine block?"
-  const prep = /^(on|to|with|into|from|against)\s/i.exec(rest)?.[1]?.toLowerCase() ?? "";
+  const prep = /^(on|to|with|into|from|against|through|via)\s/i.exec(rest)?.[1]?.toLowerCase() ?? "";
   const object = prep ? rest.slice(prep.length).trim() : rest;
   const { first: whole, verb, second } = coordinated(object);
   const { head: first, clause: other } = independent(whole);
@@ -302,7 +306,7 @@ function sentenceTargets(fact: Fact): Draft[] {
 function clauseTarget(c: Clause): Draft {
   const rest = trimEnd(c.rest);
   const cause = CAUSAL.has(c.base);
-  const prep = /^(to|in|on)\s/i.exec(rest)?.[1]?.toLowerCase() ?? "";
+  const prep = /^(to|in|on|through|via|into|from|with)\s/i.exec(rest)?.[1]?.toLowerCase() ?? "";
   return {
     subject: c.subject,
     relation: cause ? "cause" : "action",
@@ -393,7 +397,8 @@ export function targetsOf(fact: Fact, names: ReadonlySet<string> = new Set()): L
   const make = (d: Draft, ordinal: number, excerpt?: string, context = ""): LearningTarget => ({
     subject: d.subject,
     relation: d.relation,
-    fact: capital(trimEnd(d.fact)),
+    // One retrieval: a reason given after the answer ("… because it is teratogenic") is not part of it.
+    fact: capital(trimEnd(d.fact.split(/,?\s+because\s+/i)[0]!)),
     question: d.question.replace(/\s+/g, " ").replace(/\s+([?.])/g, "$1").trim(),
     kind: d.kind ?? "BASIC",
     sourcePage: fact.pageNumber,
