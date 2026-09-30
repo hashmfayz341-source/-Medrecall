@@ -1,6 +1,6 @@
 import { normalize } from "@/lib/domain/text";
 import type { Page, RetrievalKind } from "@/lib/domain/types";
-import { splitSuperlative, type Clause, type Fact } from "./facts";
+import { parseClause, splitSuperlative, type Clause, type Fact } from "./facts";
 
 /**
  * Learning targets: what a card asks, derived from a grounded fact.
@@ -107,6 +107,22 @@ function coordinated(rest: string): { first: string; verb: string | null; second
   return { first: rest, verb: null, second: null };
 }
 
+/**
+ * Cut an answer where a new clause with its own subject begins: "rolling and
+ * integrins mediate firm adhesion" → "rolling" + (integrins | mediate | firm
+ * adhesion). The second clause is its own target, never part of this answer.
+ */
+function independent(object: string): { head: string; clause: Clause | null } {
+  const joints = [...object.matchAll(/,?\s+(?:and|whereas|while|but)\s+/g)];
+  for (const joint of joints) {
+    const clause = parseClause(object.slice(joint.index! + joint[0].length));
+    if (clause && words(clause.subject).length <= 4 && clause.base !== "be" && !/^(the|a|an|it|they|this|these)$/i.test(clause.subject)) {
+      return { head: object.slice(0, joint.index!), clause };
+    }
+  }
+  return { head: object, clause: null };
+}
+
 function baseOf(third: string): string {
   if (/(?:ches|shes|sses|xes|zes)$/.test(third)) return third.slice(0, -2);
   if (/ies$/.test(third)) return `${third.slice(0, -3)}y`;
@@ -210,7 +226,7 @@ function sentenceTargets(fact: Fact): Draft[] {
       subject: S,
       relation: "comparison",
       fact: S,
-      question: `Which ${clause.verb}${object ? ` ${object}` : ""} ${comparison[2]}: ${Sq} or ${trimEnd(comparison[3]!)}?`,
+      question: `Which ${clause.verb}${object ? ` ${object}` : ""} ${comparison[2]}: ${Sq} or ${trimEnd(comparison[3]!.split(/,|\s+(?:because|since|as|when|while|whereas|but|so)\s/)[0]!)}?`,
       importance: 2.3 + core,
     });
     return out;
@@ -227,8 +243,10 @@ function sentenceTargets(fact: Fact): Draft[] {
     const prep = /^(to|in)\s/i.exec(rest)?.[1]?.toLowerCase() ?? "";
     const object = prep ? rest.slice(prep.length).trim() : rest;
     const { first, verb, second } = coordinated(object);
-    out.push({ subject: S, relation: "cause", fact: first, question: `What ${doer} ${Sq} ${advs}${verbPhrase}${prep ? ` ${prep}` : ""}?`, kind: "MECHANISM", importance: 2.5 + core });
+    const { head, clause: other } = independent(first);
+    out.push({ subject: S, relation: "cause", fact: head, question: `What ${doer} ${Sq} ${advs}${verbPhrase}${prep ? ` ${prep}` : ""}?`, kind: "MECHANISM", importance: 2.5 + core });
     if (verb && second) out.push({ subject: S, relation: "action", fact: second, question: `What ${doer} ${Sq} ${baseOf(verb)}?`, importance: 2 });
+    if (other) out.push(clauseTarget(other));
     return out;
   }
   if (TIMING_VERBS.has(base)) {
@@ -261,7 +279,8 @@ function sentenceTargets(fact: Fact): Draft[] {
   // Transitive verbs: "Cocaine blocks the reuptake of …" → "What does cocaine block?"
   const prep = /^(on|to|with|into|from|against)\s/i.exec(rest)?.[1]?.toLowerCase() ?? "";
   const object = prep ? rest.slice(prep.length).trim() : rest;
-  const { first, verb, second } = coordinated(object);
+  const { first: whole, verb, second } = coordinated(object);
+  const { head: first, clause: other } = independent(whole);
   if (words(first).length === 0) return out;
   out.push({
     subject: S,
@@ -275,7 +294,23 @@ function sentenceTargets(fact: Fact): Draft[] {
     const b = baseOf(verb);
     out.push({ subject: S, relation: CAUSAL.has(b) ? "cause" : "action", fact: second, question: `What ${doer} ${Sq} ${b}?`, kind: CAUSAL.has(b) ? "MECHANISM" : "BASIC", importance: 2.2 });
   }
+  if (other) out.push(clauseTarget(other));
   return out;
+}
+
+/** A second clause's own target: "integrins mediate firm adhesion" → "What do integrins mediate?". */
+function clauseTarget(c: Clause): Draft {
+  const rest = trimEnd(c.rest);
+  const cause = CAUSAL.has(c.base);
+  const prep = /^(to|in|on)\s/i.exec(rest)?.[1]?.toLowerCase() ?? "";
+  return {
+    subject: c.subject,
+    relation: cause ? "cause" : "action",
+    fact: prep ? rest.slice(prep.length).trim() : rest,
+    question: `What ${doFor(c)} ${inQuestion(c.subject)} ${c.adverbs ? `${c.adverbs} ` : ""}${c.base}${prep ? ` ${prep}` : ""}?`,
+    kind: cause ? "MECHANISM" : "BASIC",
+    importance: 2,
+  };
 }
 
 /** "used to treat X" / "used in X" / "used to reverse A and to treat B". */

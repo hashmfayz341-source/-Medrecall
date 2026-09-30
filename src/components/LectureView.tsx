@@ -18,6 +18,7 @@ import { existingCardsOf, parseCount, requestCards, shortfallReasonText } from "
 import type { GeneratedCards } from "@/lib/generation/generate";
 import { pageAssetId } from "@/lib/visuals/analyze";
 import type { CardLanguage, Concept, ConceptStatus, RetrievalKind } from "@/lib/domain/types";
+import { displayExcerpt } from "@/lib/domain/text";
 
 /*
  * One lecture: its cards to review, edit, approve or discard; Study; the
@@ -472,7 +473,7 @@ export function LectureView({ lectureId }: { lectureId: string }) {
                         View source · {document?.title ?? lecture.title}, page {concept.source.pageNumber}
                       </summary>
                       <blockquote dir="auto" data-testid={`source-excerpt-${concept.id}`} className="mt-2 whitespace-pre-line border-l-4 border-clinical-300 pl-4 text-[0.95rem] leading-relaxed text-ink-600">
-                        {concept.source.excerpt}
+                        {displayExcerpt(concept.source.excerpt)}
                       </blockquote>
                       <div className="mt-3">
                         <CardImage image={{ assetId: pageAssetId(concept.source.documentId, concept.source.pageNumber), documentId: concept.source.documentId, pageNumber: concept.source.pageNumber, placement: "back" }} alt={`Page ${concept.source.pageNumber}`} size="page" testId={`source-page-image-${concept.id}`} hideWhenMissing />
