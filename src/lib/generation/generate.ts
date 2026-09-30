@@ -1,5 +1,5 @@
 import { normalize } from "@/lib/domain/text";
-import type { CardImage, CardLanguage, Concept, ConceptImportance, RetrievalItem, RetrievalKind, SourceDocument } from "@/lib/domain/types";
+import type { CardImage, CardLanguage, Concept, ConceptImportance, Page, RetrievalItem, SourceDocument } from "@/lib/domain/types";
 import { captionKey, captionTarget, figureAssetId, sameImage, type PageVisuals } from "@/lib/visuals/analyze";
 import {
   isStructureWord,
@@ -13,18 +13,24 @@ import {
   type Coverage,
   type RenderedArabic,
 } from "./arabic";
-import { extractFacts, factsOverlap, splitMechanism, type Fact } from "./facts";
+import { extractFacts, factsOverlap, singleSubjectCaption, splitMechanism, splitSuperlative, type Fact, type Skipped } from "./facts";
 import { templatesFor } from "./language";
+import { properNounsOf, rejectTarget, targetsOf, type LearningTarget } from "./targets";
 
 /**
  * Lecture → flashcards.
  *
+ * Lecture text → grounded facts (`facts.ts`, which keeps the source's
+ * structure) → learning targets (`targets.ts`: one subject, one relation,
+ * one short answer, each checked) → coverage-aware selection → cards.
+ *
  * Every generated card is one DRAFT Concept with one RetrievalItem: the
  * Concept keeps MedRecall's semantic layer (approval gate, provenance,
  * mastery, the Tutor) and the item is the card the learner studies. Ids are
- * deterministic (`${document}-p${page}-f${fact}`), so generating again
- * yields the same ids for the same facts and "Generate more" can skip what
- * already exists without touching its FSRS history.
+ * deterministic (`${document}-p${page}-f${fact}`, `…-t${n}` for a fact's
+ * further targets), so generating again yields the same ids for the same
+ * facts and "Generate more" can skip what already exists without touching
+ * its FSRS history.
  *
  * A lecture may have several documents; generation runs over the ones it is
  * given, and every card keeps the exact document, page, excerpt and image
@@ -66,6 +72,14 @@ export interface GeneratedCards {
   /** How many fewer cards than requested could be made (0 when satisfied or AUTO). */
   shortfall: number;
   /**
+   * Why a shortfall happened: "source" — the lecture does not state enough
+   * distinct facts; "extraction" — it states more, but they could not be
+   * turned into trustworthy cards (see `rejected`). Null without a shortfall.
+   */
+  shortfallReason: "source" | "extraction" | null;
+  /** What was not made into a card, by reason (text units and targets). */
+  rejected: Record<string, number>;
+  /**
    * For the Arabic modes: cards written as Arabic sentences by the
    * deterministic templates, and cards where part of the lecture's English
    * wording was kept because the sentence is outside the supported patterns
@@ -84,6 +98,12 @@ export function factId(documentId: string, fact: Pick<Fact, "pageNumber" | "inde
   return `${documentId}-p${fact.pageNumber}-f${fact.index}`;
 }
 
+/** A card's id: its fact's id, and the target's ordinal after the first. */
+export function targetId(documentId: string, target: Pick<LearningTarget, "source" | "ordinal">): string {
+  const id = factId(documentId, target.source);
+  return target.ordinal === 0 ? id : `${id}-t${target.ordinal}`;
+}
+
 const STOP = new Set(["the", "and", "that", "this", "with", "from", "into", "which", "when", "than", "then", "their", "there", "they", "them", "its", "for", "are", "was", "were", "has", "have", "had", "been", "being", "most", "more", "much", "many", "some", "such", "also", "very", "other", "because", "about", "after", "before", "between", "during", "through", "while", "would", "could", "should", "over", "under", "both", "each", "not", "but", "can", "may", "will", "one", "within", "cells", "cell"]);
 
 function keywords(text: string, limit: number): string[] {
@@ -96,13 +116,9 @@ function keywords(text: string, limit: number): string[] {
   return out;
 }
 
-function blank(sentence: string, part: string): string {
-  const idx = sentence.indexOf(part);
-  return idx >= 0 ? `${sentence.slice(0, idx)}___${sentence.slice(idx + part.length)}` : `___ ${sentence}`;
-}
-
-/** A fact located in its document. */
+/** A target located in its document. */
 interface Located {
+  target: LearningTarget;
   fact: Fact;
   documentId: string;
 }
@@ -145,72 +161,83 @@ function figureAnswer(fact: Fact): string {
   return text;
 }
 
-function itemFor(fact: Fact, conceptId: string, language: CardLanguage, documentId: string): { item: RetrievalItem; coverage: Coverage | null } {
-  const t = templatesFor(language);
-  const term = fact.term;
-  let kind: RetrievalKind = "BASIC";
-  let prompt: string;
-  let acceptable: string[] = [];
-  let required: string[][];
-  let image: CardImage | undefined;
-
-  switch (fact.kind) {
-    case "definition":
-      prompt = t.definition(term);
-      required = keywords(fact.text.slice(fact.subject ? fact.subject.length : 0), 2).map((k) => [k]);
-      break;
-    case "superlative":
-      prompt = t.superlative(fact.consequence ?? fact.text);
-      acceptable = [term, ...(fact.subject && fact.subject !== term ? [fact.subject] : [])];
-      required = [[normalize(term)]];
-      break;
-    case "mechanism":
-      kind = "MECHANISM";
-      prompt = t.mechanism(blank(fact.text, fact.consequence ?? ""));
-      required = keywords(fact.consequence ?? fact.text, 2).map((k) => [k]);
-      break;
-    case "list":
-      prompt = t.list(term);
-      required = (fact.items ?? []).slice(0, 3).map((item) => keywords(item, 1)).filter((k) => k.length > 0);
-      break;
-    case "figure":
-      kind = "IMAGE";
-      prompt = t.figure();
-      acceptable = [fact.figure?.answer ?? term];
-      required = [keywords(fact.figure?.answer ?? term, 2)].filter((k) => k.length > 0);
-      image = {
-        assetId: figureAssetId(documentId, fact.pageNumber, fact.figure?.index ?? 0),
-        documentId,
-        pageNumber: fact.pageNumber,
-        region: fact.figure?.region,
-        placement: "front",
-      };
-      break;
-    default:
-      kind = "CLOZE";
-      prompt = t.cloze(blank(fact.text, fact.subject ?? term));
-      acceptable = [term, ...(fact.subject && fact.subject !== term ? [fact.subject] : [])];
-      required = [[normalize(term)]];
+/**
+ * The Arabic rendering of a target. A sentence's first target keeps the
+ * Arabic card of its sentence (unchanged behaviour); a sentence whose
+ * pronoun was resolved is rendered from the resolved sentence; further
+ * targets of a sentence, labelled items and table rows are rendered by the
+ * same rules from their own words, and are partial when they fall outside
+ * the supported patterns (disclosed, never hidden).
+ */
+function arabicForTarget(target: LearningTarget, mode: ArabicMode): RenderedArabic {
+  const rendered = arabicStructured(target, mode);
+  // Never "ما هو <an English phrase>؟": a question that would wrap more than
+  // a medical term in English is asked as an Arabic fill-in-the-blank of the
+  // lecture's statement instead, with the answer as the blank.
+  const wrapped = /^ما هو (.+)؟$/.exec(rendered.prompt)?.[1];
+  if (wrapped && wrapped.replace(/\([^)]*\)/g, " ").split(/\s+/).filter((w) => /^[A-Za-z]/.test(w)).length > 4) {
+    const fact = target.source;
+    const statement =
+      fact.kind === "table"
+        ? `The ${/^What is the (.+) of .+\?$/.exec(target.question)?.[1] ?? "value"} of ${target.subject} is ${target.fact}`
+        : (fact.resolved ?? fact.text).replace(/^(therefore|however|thus|hence|also|in addition|moreover|furthermore|consequently),\s+/i, "");
+    const blank = statement.toLowerCase().includes(target.fact.toLowerCase()) ? statement.slice(statement.toLowerCase().indexOf(target.fact.toLowerCase()), statement.toLowerCase().indexOf(target.fact.toLowerCase()) + target.fact.length) : target.subject;
+    return renderCloze(statement.replace(/[.!?]+$/, ""), blank, mode);
   }
-  if (required.length === 0) required = [[normalize(term)]];
-  let explanation =
-    fact.kind === "list" ? (fact.items ?? []).join("; ") : fact.kind === "figure" ? `${figureAnswer(fact)}.` : fact.text;
+  return rendered;
+}
+
+function arabicStructured(target: LearningTarget, mode: ArabicMode): RenderedArabic {
+  const fact = target.source;
+  if (fact.kind === "list" || fact.kind === "figure") return arabicFor(fact, mode);
+  if (fact.kind === "pair") return renderDefinition(fact.label ?? fact.term, `is ${fact.detail ?? ""}`, mode) ?? renderCloze(`${fact.label} is ${fact.detail}`, fact.label ?? fact.term, mode);
+  if (fact.kind === "table") {
+    if (target.relation === "table-compare") return renderList(target.subject, target.fact.split("; "), mode);
+    const column = /^What is the (.+) of .+\?$/.exec(target.question)?.[1] ?? "";
+    return renderDefinition(`the ${column} of ${target.subject}`, `is ${target.fact}`, mode) ?? renderCloze(`The ${column} of ${target.subject} is ${target.fact}`, target.subject, mode);
+  }
+  const sentence = (fact.resolved ?? fact.text).replace(/^(therefore|however|thus|hence|also|in addition|moreover|furthermore|consequently),\s+/i, "");
+  if (target.ordinal > 0) return renderCloze(sentence, target.subject, mode);
+  if (!fact.resolved) return arabicFor(fact, mode);
+  const superlative = splitSuperlative(sentence);
+  return arabicFor({ ...fact, text: sentence, subject: superlative?.subject ?? fact.subject, consequence: superlative?.rest ?? splitMechanism(sentence)?.consequence ?? fact.consequence }, mode);
+}
+
+const STOP_ANSWER = /^(the|a|an)\s+/i;
+
+function itemFor(target: LearningTarget, conceptId: string, language: CardLanguage, documentId: string): { item: RetrievalItem; coverage: Coverage | null } {
+  const t = templatesFor(language);
+  const fact = target.source;
+  let prompt = target.question;
+  let explanation = target.fact;
+  let image: CardImage | undefined;
+  const acceptable = [target.fact, ...(STOP_ANSWER.test(target.fact) ? [target.fact.replace(STOP_ANSWER, "")] : [])];
+  let required = keywords(target.fact, 2).map((k) => [k]);
+  if (target.relation === "list") required = (fact.items ?? []).slice(0, 3).map((item) => keywords(item, 1)).filter((k) => k.length > 0);
+  if (fact.kind === "figure") {
+    prompt = t.figure();
+    explanation = `${figureAnswer(fact)}.`;
+    required = [keywords(fact.figure?.answer ?? fact.term, 2)].filter((k) => k.length > 0);
+    image = {
+      assetId: figureAssetId(documentId, fact.pageNumber, fact.figure?.index ?? 0),
+      documentId,
+      pageNumber: fact.pageNumber,
+      region: fact.figure?.region,
+      placement: "front",
+    };
+  }
+  if (required.length === 0) required = [[normalize(target.subject)]];
   let coverage: Coverage | null = null;
   if (language !== "en") {
-    // The Arabic modes write the question AND the answer from the fact's
-    // structure; the verbatim English stays the card's source excerpt.
-    const rendered = arabicFor(fact, language);
+    // The Arabic modes write the question AND the answer; the verbatim
+    // English stays the card's source excerpt.
+    const rendered = arabicForTarget(target, language);
     prompt = rendered.prompt;
     explanation = rendered.explanation;
     coverage = rendered.coverage;
   }
-  const item: RetrievalItem = { id: `${conceptId}-r1`, conceptId, kind, prompt, requiredKeywords: required, acceptableAnswers: acceptable, explanation };
+  const item: RetrievalItem = { id: `${conceptId}-r1`, conceptId, kind: target.kind, prompt, requiredKeywords: required, acceptableAnswers: acceptable, explanation };
   return { item: image ? { ...item, image } : item, coverage };
-}
-
-/** The same fact phrased as a cloze, when its natural prompt would repeat an earlier card's. */
-function asCloze(fact: Fact): Fact {
-  return { ...fact, kind: "statement" };
 }
 
 /**
@@ -227,6 +254,9 @@ const GENERIC = new Set([
   "photomicrograph", "histology", "magnification", "arrow", "arrows", "power", "field", "area", "areas", "region", "feature",
   "features", "example", "appearance", "typical", "classic",
 ]);
+
+/** A "figure" carrying more text than this is a table or a text slide, not a picture. */
+const MAX_FIGURE_LABELS = 12;
 
 /** Prepositions that end a caption's subject: "coagulative necrosis | of myocardial fibres". */
 const SUBJECT_END = /\s+(?:of|in|with|showing|from|at|on|after|during|within|following|and|versus|vs)\s+/i;
@@ -282,6 +312,9 @@ const specific = (w: string) => w.length >= 3 && !GENERIC.has(w) && !FUNCTION_WO
 const PARTICIPLE_END = /\s+(?=[a-z]{3,}ing\s+(?:a|an|the|its|their)\s)/i;
 
 function pageFigure(image: CardImage, caption: string | undefined, labels: readonly string[]): PageFigure | null {
+  // A table or several panels under one caption, or text posing as a figure: never on a card.
+  if (caption && !singleSubjectCaption(caption)) return null;
+  if (labels.length > MAX_FIGURE_LABELS) return null;
   const target = caption ? captionTarget(caption) : "";
   const [clause = "", ...after] = target.split(SUBJECT_END);
   const [subject = "", ...participle] = clause.split(PARTICIPLE_END);
@@ -376,27 +409,34 @@ function relatedFigure(fact: Fact, figures: readonly PageFigure[]): CardImage | 
 }
 
 function conceptFor(located: Located, input: GenerateCardsInput, figuresOnPage: Map<string, PageFigure[]>): { concept: Concept; coverage: Coverage | null } {
-  const { fact, documentId } = located;
-  const id = factId(documentId, fact);
-  const { item, coverage } = itemFor(fact, id, input.language, documentId);
-  const support = !item.image ? relatedFigure(fact, figuresOnPage.get(`${documentId}#${fact.pageNumber}`) ?? []) : undefined;
-  const importance: ConceptImportance = fact.score >= 2 ? "CORE" : "SUPPORTING";
+  const { target, fact, documentId } = located;
+  const id = targetId(documentId, target);
+  const { item, coverage } = itemFor(target, id, input.language, documentId);
+  // A figure illustrates the back of a card about what it shows: judged on the card's own words.
+  const about: Fact = { ...fact, text: `${fact.resolved ?? fact.text}`, term: target.subject };
+  const support = !item.image ? relatedFigure(about, figuresOnPage.get(`${documentId}#${fact.pageNumber}`) ?? []) : undefined;
+  const importance: ConceptImportance = target.importance >= 2.5 ? "CORE" : "SUPPORTING";
+  const title =
+    fact.kind === "figure"
+      ? `${figureAnswer(fact)} (figure, page ${fact.pageNumber})`
+      : fact.kind === "table"
+        ? `${target.subject} — ${/^What is the (.+) of .+\?$/.exec(target.question)?.[1] ?? "comparison"}`
+        : fact.kind === "list"
+          ? fact.term
+          : titleOf(target.subject);
   const concept: Concept = {
     id,
     courseId: input.courseId,
     lectureId: input.lectureId,
-    title:
-      fact.kind === "figure"
-        ? `${figureAnswer(fact)} (figure, page ${fact.pageNumber})`
-        : fact.term.length > 90
-          ? `${fact.term.slice(0, 87)}…`
-          : fact.term,
+    title: title.length > 90 ? `${title.slice(0, 87)}…` : title,
     summary:
       fact.kind === "list"
         ? `${fact.term}: ${(fact.items ?? []).join("; ")}`
         : fact.kind === "figure"
           ? `Figure on page ${fact.pageNumber}: ${figureAnswer(fact)}`
-          : fact.text,
+          : fact.kind === "table" || target.ordinal > 0
+            ? `${target.question} ${target.fact}`
+            : fact.text,
     importance,
     status: "DRAFT",
     prerequisiteIds: [],
@@ -405,11 +445,17 @@ function conceptFor(located: Located, input: GenerateCardsInput, figuresOnPage: 
       lectureId: input.lectureId,
       documentId,
       pageNumber: fact.pageNumber,
-      excerpt: fact.text,
+      excerpt: target.sourceExcerpt,
     },
     retrievalItems: [support ? { ...item, image: support } : item],
   };
   return { concept, coverage };
+}
+
+/** A concept title from a subject: its words, capitalised, without a leading article. */
+function titleOf(subject: string): string {
+  const cleaned = subject.replace(/^(the|a|an)\s+/i, "").trim();
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 }
 
 /**
@@ -455,10 +501,11 @@ function sameImageGroups(hashes: readonly string[]): number[][] {
  * whose captions agree keep a single image question (the first). Provenance
  * is untouched: every asset stays on its own page.
  */
-function dropRepeatedFigures(facts: readonly Located[], contradictory: ReadonlySet<string>): Located[] {
-  const assetOf = (l: Located) => figureAssetId(l.documentId, l.fact.pageNumber, l.fact.figure!.index);
+function dropRepeatedFigures(facts: readonly { fact: Fact; documentId: string }[], contradictory: ReadonlySet<string>): { fact: Fact; documentId: string }[] {
+  type Found = { fact: Fact; documentId: string };
+  const assetOf = (l: Found) => figureAssetId(l.documentId, l.fact.pageNumber, l.fact.figure!.index);
   const figures = facts.filter((l) => l.fact.kind === "figure" && l.fact.figure?.contentHash);
-  const drop = new Set<Located>(figures.filter((l) => contradictory.has(assetOf(l))));
+  const drop = new Set<Found>(figures.filter((l) => contradictory.has(assetOf(l))));
   for (const group of sameImageGroups(figures.map((l) => l.fact.figure!.contentHash!))) {
     for (const i of group.slice(1)) drop.add(figures[i]!);
   }
@@ -475,6 +522,41 @@ function isRedundantFigure(figure: Fact, textFacts: readonly Fact[]): boolean {
   const answer = normalize(figure.figure?.answer ?? "");
   if (!answer) return true;
   return textFacts.some((t) => factsOverlap({ text: figure.figure!.answer }, t) || normalize(t.term) === answer);
+}
+
+/** Reasons that describe the source (not a card-making failure): they never count towards "extraction". */
+const NOT_FACTUAL = new Set(["administrative", "question", "caption", "fragment", "case-vignette", "question-only-source", "duplicate"]);
+
+/**
+ * The order cards are chosen in, for any requested count: a card's
+ * importance, less a little for every more important card already taken
+ * from the same page, and a little more when its relation was already used
+ * on that page. So 20 cards are the lecture's most important retrievals
+ * spread across its sections, 40 add each section's next ones, and a larger
+ * count only ever adds (20 ⊂ 40 ⊂ 60). Never filler: every candidate has
+ * passed the quality checks, and when they run out the count is not met.
+ */
+function coverageOrder(candidates: readonly { located: Located }[], order: (a: Located, b: Located) => number): number[] {
+  const byPage = new Map<string, number[]>();
+  candidates.forEach((c, i) => {
+    const key = `${c.located.documentId}#${c.located.fact.pageNumber}`;
+    byPage.set(key, [...(byPage.get(key) ?? []), i]);
+  });
+  const priority = new Array<number>(candidates.length).fill(0);
+  for (const members of byPage.values()) {
+    const ranked = [...members].sort((a, b) => candidates[b]!.located.target.importance - candidates[a]!.located.target.importance || order(candidates[a]!.located, candidates[b]!.located));
+    const relations = new Map<string, number>();
+    const subjects = new Map<string, number>();
+    ranked.forEach((i, rank) => {
+      const t = candidates[i]!.located.target;
+      const sameRelation = relations.get(t.relation) ?? 0;
+      const sameSubject = subjects.get(normalize(t.subject)) ?? 0;
+      priority[i] = t.importance - 0.6 * rank - 0.25 * sameRelation - 0.25 * sameSubject;
+      relations.set(t.relation, sameRelation + 1);
+      subjects.set(normalize(t.subject), sameSubject + 1);
+    });
+  }
+  return candidates.map((_, i) => i).sort((a, b) => priority[b]! - priority[a]! || order(candidates[a]!.located, candidates[b]!.located));
 }
 
 function documentsOf(input: GenerateCardsInput): GenerationDocument[] {
@@ -499,30 +581,69 @@ export function generateCards(input: GenerateCardsInput): GeneratedCards {
   const requested = input.count === "auto" ? "auto" : Math.max(1, Math.min(MAX_CARD_COUNT, Math.floor(input.count)));
   const documents = documentsOf(input);
   const documentOrder = new Map(documents.map((d, i) => [d.id, i]));
+  const pageOf = new Map<string, Page>();
+  for (const doc of documents) for (const page of doc.pages) pageOf.set(`${doc.id}#${page.number}`, page);
 
-  const extracted: Located[] = documents.flatMap((doc) =>
-    extractFacts(doc.pages, doc.visuals ?? []).map((fact) => ({ fact, documentId: doc.id })),
-  );
+  const rejected: Record<string, number> = {};
+  const reject = (reason: string) => (rejected[reason] = (rejected[reason] ?? 0) + 1);
+  const extracted = documents.flatMap((doc) => {
+    const skipped: Skipped[] = [];
+    const facts = extractFacts(doc.pages, doc.visuals ?? [], skipped).map((fact) => ({ fact, documentId: doc.id }));
+    for (const s of skipped) reject(s.reason);
+    return facts;
+  });
   const textFacts = extracted.filter((l) => l.fact.kind !== "figure").map((l) => l.fact);
   const contradictory = contradictoryFigures(documents);
-  const all = dropRepeatedFigures(extracted, contradictory).filter((l) => l.fact.kind !== "figure" || !isRedundantFigure(l.fact, textFacts));
+  const facts = dropRepeatedFigures(extracted, contradictory).filter((l) => l.fact.kind !== "figure" || !isRedundantFigure(l.fact, textFacts));
+
+  // Facts → learning targets, each checked before it may become a card.
+  const targets: Located[] = [];
+  const names = properNounsOf(documents.flatMap((d) => d.pages.map((p) => p.text)));
+  for (const { fact, documentId } of facts) {
+    for (const target of targetsOf(fact, names)) {
+      const page = pageOf.get(`${documentId}#${fact.pageNumber}`);
+      const reason = fact.kind === "figure" ? null : page ? rejectTarget(target, page) : "excerpt-not-verbatim";
+      if (reason) reject(reason);
+      else targets.push({ target, fact, documentId });
+    }
+  }
 
   const existingIds = new Set(input.existing.map((e) => e.id));
-  const existingTexts = input.existing.map((e) => ({ text: e.summary }));
+  const factOfId = (id: string) => id.replace(/-t\d+$/, "");
+  const existingTexts = input.existing.map((e) => ({ id: e.id, text: e.summary }));
 
-  // Dedupe against what exists, then among the new facts (best score wins).
-  const fresh = all.filter(({ fact, documentId }) => {
-    if (existingIds.has(factId(documentId, fact))) return false;
-    if (fact.kind === "figure") return true;
-    return !existingTexts.some((e) => factsOverlap(e, fact));
-  });
+  // What already exists (by id; by statement, unless it is the same fact's
+  // other target) is ranked with everything else, then skipped: so "Generate
+  // more" continues the same order, and 20 + 20 are the 40 a single run gives.
   const order = (a: Located, b: Located) =>
-    (documentOrder.get(a.documentId) ?? 0) - (documentOrder.get(b.documentId) ?? 0) || a.fact.pageNumber - b.fact.pageNumber || a.fact.index - b.fact.index;
-  const ranked = [...fresh].sort((a, b) => b.fact.score - a.fact.score || order(a, b));
+    (documentOrder.get(a.documentId) ?? 0) - (documentOrder.get(b.documentId) ?? 0) || a.fact.pageNumber - b.fact.pageNumber || a.fact.index - b.fact.index || a.target.ordinal - b.target.ordinal;
+  const isFresh = (located: Located) => {
+    const id = targetId(located.documentId, located.target);
+    if (existingIds.has(id)) return false;
+    if (located.fact.kind === "figure") return true;
+    const statement = { text: located.target.ordinal === 0 && located.fact.kind !== "table" ? located.fact.text : `${located.target.question} ${located.target.fact}` };
+    const siblingOf = factId(located.documentId, located.fact);
+    return !existingTexts.some((e) => factOfId(e.id) !== siblingOf && factsOverlap(e, statement));
+  };
+  const ranked = [...targets].sort((a, b) => b.target.importance - a.target.importance || order(a, b));
   const kept: Located[] = [];
+  const answerKey = (l: Located) => `${l.target.relation}|${normalize(l.target.subject)}`;
   for (const located of ranked) {
-    const { fact } = located;
-    if (fact.kind !== "figure" && kept.some((k) => k.fact.kind !== "figure" && factsOverlap(k.fact, fact))) continue;
+    const { target, fact } = located;
+    if (fact.kind !== "figure") {
+      // The same statement from another sentence or slide, or the same retrieval asked twice: a semantic duplicate.
+      const duplicate = kept.some(
+        (k) =>
+          k.fact.kind !== "figure" &&
+          ((k.fact !== fact && k.target.ordinal === 0 && target.ordinal === 0 && k.fact.kind === fact.kind && fact.kind !== "table" && factsOverlap(k.fact, fact)) ||
+            (answerKey(k) === answerKey(located) && factsOverlap({ text: k.target.fact }, { text: target.fact }, 0.5)) ||
+            normalize(k.target.fact) === normalize(target.fact) && normalize(k.target.subject) === normalize(target.subject)),
+      );
+      if (duplicate) {
+        reject("duplicate");
+        continue;
+      }
+    }
     kept.push(located);
   }
 
@@ -533,7 +654,8 @@ export function generateCards(input: GenerateCardsInput): GeneratedCards {
     for (const page of doc.visuals ?? []) {
       page.figures.forEach((figure, i) => {
         const image: CardImage = { assetId: figureAssetId(doc.id, page.pageNumber, i), documentId: doc.id, pageNumber: page.pageNumber, region: figure.region, placement: "back" };
-        if (contradictory.has(image.assetId)) return;
+        // A whole-page render is the slide, not a figure of it.
+        if (contradictory.has(image.assetId) || figure.kind === "page") return;
         const described = pageFigure(image, figure.caption, figure.labels ?? []);
         if (!described) return;
         const key = `${doc.id}#${page.pageNumber}`;
@@ -542,37 +664,35 @@ export function generateCards(input: GenerateCardsInput): GeneratedCards {
     }
   }
 
-  // Two facts about the same term would ask the same question ("What is X?")
-  // with different answers; the later one is asked as a cloze instead, and a
-  // prompt that still repeats is dropped rather than shown twice. Image
-  // questions are distinct by the figure they show. Done before the count is
-  // applied, so a requested number is met whenever enough distinct cards
-  // exist.
+  // A prompt shown twice would be one question with two answers: the later
+  // one is dropped. Image questions are distinct by the figure they show.
   const prompts = new Set<string>();
   const candidates: { located: Located; concept: Concept; coverage: Coverage | null }[] = [];
   for (const located of kept) {
     const isFigure = located.fact.kind === "figure";
-    const keyOf = (c: Concept) => (isFigure ? `figure:${c.retrievalItems[0]!.image?.assetId}` : normalize(c.retrievalItems[0]!.prompt));
-    let built = conceptFor(located, input, figuresOnPage);
-    let key = keyOf(built.concept);
-    if (prompts.has(key) && !isFigure) {
-      built = conceptFor({ ...located, fact: asCloze(located.fact) }, input, figuresOnPage);
-      key = keyOf(built.concept);
+    const built = conceptFor(located, input, figuresOnPage);
+    const key = isFigure ? `figure:${built.concept.retrievalItems[0]!.image?.assetId}` : normalize(built.concept.retrievalItems[0]!.prompt);
+    if (prompts.has(key)) {
+      reject("duplicate");
+      continue;
     }
-    if (prompts.has(key)) continue;
     prompts.add(key);
     candidates.push({ located, ...built });
   }
 
-  const selected =
-    requested === "auto" ? candidates.filter((c) => c.located.fact.score >= AUTO_MIN_SCORE) : candidates.slice(0, requested);
+  const chosen = coverageOrder(candidates, order).map((i) => candidates[i]!).filter((c) => isFresh(c.located));
+  const selected = requested === "auto" ? chosen.filter((c) => c.located.target.importance >= AUTO_MIN_SCORE) : chosen.slice(0, requested);
   selected.sort((a, b) => order(a.located, b.located));
   const concepts = selected.map((c) => c.concept);
+  const shortfall = requested === "auto" ? 0 : Math.max(0, requested - concepts.length);
+  const factual = Object.entries(rejected).filter(([reason]) => !NOT_FACTUAL.has(reason)).reduce((n, [, count]) => n + count, 0);
   return {
     concepts,
     requested,
-    available: candidates.length,
-    shortfall: requested === "auto" ? 0 : Math.max(0, requested - concepts.length),
+    available: chosen.length,
+    shortfall,
+    shortfallReason: shortfall === 0 ? null : chosen.length + factual >= (requested as number) ? "extraction" : "source",
+    rejected,
     coverage: {
       arabic: selected.filter((c) => c.coverage === "arabic").length,
       partial: selected.filter((c) => c.coverage === "partial").length,

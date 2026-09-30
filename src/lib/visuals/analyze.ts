@@ -94,7 +94,8 @@ export function captionTarget(caption: string): string {
 /**
  * Attach captions and labels to a page's figures from the page's positioned
  * text. A caption is the text in a narrow band just below the figure (or,
- * failing that, just above it) that overlaps it horizontally; labels are the
+ * failing that, just above it) that lies under THIS figure horizontally —
+ * never a line shared with, or nearer to, another figure; labels are the
  * text items drawn inside the figure. Pure and deterministic.
  */
 export function annotateFigures(
@@ -117,7 +118,30 @@ export function annotateFigures(
         bottom: 1 - y / page.height,
       };
     });
-  const overlapsX = (b: (typeof boxes)[number], r: PageRegion) => b.x1 > r.x - 0.05 && b.x0 < r.x + r.w + 0.05;
+  // A caption line belongs to the figure it sits under: most of its width
+  // within that figure's horizontal extent. A line spanning two figures
+  // ("Figure 3: Wet (left) and dry (right) gangrene", one centred title
+  // under two panels) belongs to neither: it cannot say which is which.
+  const spanOf = (b: { x0: number; x1: number }, r: PageRegion) => Math.max(0, Math.min(b.x1, r.x + r.w + 0.01) - Math.max(b.x0, r.x - 0.01)) / Math.max(1e-6, b.x1 - b.x0);
+  // Ownership is decided per visual line (runs on one baseline with no wide gap), not per text run.
+  const lineOf = new Map<(typeof boxes)[number], { x0: number; x1: number }>();
+  const byRow = [...boxes].sort((a, b) => a.top - b.top || a.x0 - b.x0);
+  for (let i = 0; i < byRow.length; ) {
+    let j = i + 1;
+    let x1 = byRow[i]!.x1;
+    while (j < byRow.length && Math.abs(byRow[j]!.top - byRow[i]!.top) < 0.01 && byRow[j]!.x0 - x1 < 0.03) x1 = Math.max(x1, byRow[j++]!.x1);
+    const extent = { x0: byRow[i]!.x0, x1 };
+    for (let k = i; k < j; k++) lineOf.set(byRow[k]!, extent);
+    i = j;
+  }
+  const owner = (box: (typeof boxes)[number]): number | null => {
+    const b = lineOf.get(box) ?? box;
+    const spans = figures.map((f) => spanOf(b, f.region));
+    const over = spans.map((v, i) => (v >= 0.25 ? i : -1)).filter((i) => i >= 0);
+    if (over.length !== 1) return null;
+    return spans[over[0]!]! >= 0.6 ? over[0]! : null;
+  };
+  const overlapsX = (b: (typeof boxes)[number], r: PageRegion, index: number) => spanOf(b, r) > 0 && owner(b) === index;
   const joinRows = (list: typeof boxes) =>
     [...list]
       .sort((a, b) => a.top - b.top || a.x0 - b.x0)
@@ -126,11 +150,11 @@ export function annotateFigures(
       .replace(/\s+/g, " ")
       .trim();
 
-  return figures.map((figure) => {
+  return figures.map((figure, index) => {
     const r = figure.region;
     const inside = boxes.filter((b) => b.top >= r.y - 0.005 && b.bottom <= r.y + r.h + 0.005 && b.x0 >= r.x - 0.01 && b.x1 <= r.x + r.w + 0.01);
-    const below = boxes.filter((b) => b.top >= r.y + r.h - 0.005 && b.top <= r.y + r.h + CAPTION_BAND && overlapsX(b, r) && !inside.includes(b));
-    const above = boxes.filter((b) => b.bottom <= r.y + 0.005 && b.bottom >= r.y - CAPTION_BAND && overlapsX(b, r) && !inside.includes(b));
+    const below = boxes.filter((b) => b.top >= r.y + r.h - 0.005 && b.top <= r.y + r.h + CAPTION_BAND && overlapsX(b, r, index) && !inside.includes(b));
+    const above = boxes.filter((b) => b.bottom <= r.y + 0.005 && b.bottom >= r.y - CAPTION_BAND && overlapsX(b, r, index) && !inside.includes(b));
     const pick = (list: typeof boxes) => {
       if (list.length === 0) return undefined;
       // Only the nearest row(s): a caption is one or two lines, not the slide's prose.
@@ -234,6 +258,8 @@ export const REPEATED_SHARE = 0.3;
 export const MIN_DIAGRAM_PATHS = 25;
 /** A region covering this much of the page is treated as the whole page. */
 export const WHOLE_PAGE_AREA = 0.9;
+/** A repeated slot holds distinct content (not a logo) only when its pictures are at least this large. */
+export const DISTINCT_SLOT_AREA = 0.08;
 
 type Matrix = [number, number, number, number, number, number];
 const IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
@@ -358,18 +384,27 @@ export function isFigureSized(image: DetectedImage): boolean {
  * whether a page's text supports a visual card.
  */
 export function selectFigures(pages: readonly PageVisualAnalysis[]): PageVisuals[] {
-  // Images repeated at the same place and size across pages are branding.
-  const seenOn = new Map<string, Set<number>>();
+  // Images repeated at the same place and size across pages are branding —
+  // unless they are different pictures in the same layout slot: every
+  // occurrence its own image object (none shared across pages, which pdfjs
+  // marks "g_…"), and large enough to be content (a logo is small).
+  const seenOn = new Map<string, { pages: Set<number>; ids: string[] }>();
   for (const page of pages) {
     for (const image of page.images) {
       const key = signature(image.region);
-      const set = seenOn.get(key) ?? new Set<number>();
-      set.add(page.pageNumber);
-      seenOn.set(key, set);
+      const entry = seenOn.get(key) ?? { pages: new Set<number>(), ids: [] };
+      entry.pages.add(page.pageNumber);
+      entry.ids.push(image.objId);
+      seenOn.set(key, entry);
     }
   }
   const repeatedLimit = Math.max(REPEATED_MIN_PAGES, Math.ceil(pages.length * REPEATED_SHARE));
-  const isRepeated = (image: DetectedImage) => (seenOn.get(signature(image.region))?.size ?? 0) >= repeatedLimit;
+  const isRepeated = (image: DetectedImage) => {
+    const entry = seenOn.get(signature(image.region));
+    if (!entry || entry.pages.size < repeatedLimit) return false;
+    const distinct = new Set(entry.ids).size === entry.ids.length && entry.ids.every((id) => !/^g_/.test(id));
+    return !(distinct && area(image.region) >= DISTINCT_SLOT_AREA);
+  };
 
   return pages.map((page) => {
     const figures: FigureCandidate[] = [];

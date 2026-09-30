@@ -342,7 +342,8 @@ test("Arabic mode writes Arabic answers with Arabic medical terms; the UI disclo
   if (partial > 0) await expect(page.getByTestId("coverage-note")).toContainText(`Partly English: ${partial} card`);
   await expect(page.getByTestId("coverage-note")).not.toContainText("written as Arabic sentences");
   await page.goto(`/lectures/${lectureId}`);
-  const hypoxia = page.locator('[data-testid^="card-front-"]').filter({ hasText: "إصابة الخلية (cell injury)" }).first();
+  // The "most common cause" card (the list of causes on the page before also names cell injury).
+  const hypoxia = page.locator('[data-testid^="card-front-"]').filter({ hasText: "السبب الأكثر شيوعًا لـ إصابة الخلية (cell injury)" }).first();
   const id = (await hypoxia.getAttribute("data-testid"))!.replace("card-front-", "");
   await expect(hypoxia).toHaveText("ما هو السبب الأكثر شيوعًا لـ إصابة الخلية (cell injury)؟");
   await expect(page.getByTestId(`card-back-${id}`)).toHaveText("نقص الأكسجة (Hypoxia) هو السبب الأكثر شيوعًا لـ إصابة الخلية (cell injury).");
@@ -446,7 +447,14 @@ test("a lecture with two PDFs: generate from the second, then from all material 
   await page.getByTestId("cards-filter-ALL").click();
   const fronts = await page.locator('[data-testid^="card-front-"]').allTextContents();
   const backs = await page.locator('[data-testid^="card-back-"]').allTextContents();
-  expect(new Set(backs).size).toBe(backs.length);
+  const sources = await page.locator('[data-testid^="view-source-"]').allTextContents();
+  // No card twice: every question is asked once, and no answer is given twice from the same
+  // source statement. (A short answer — "Ischaemia" — may answer two different questions; image
+  // questions share their wording and differ by the picture, which is checked with the answer below.)
+  const textFronts = fronts.filter((f) => f !== "What is shown in this image?");
+  expect(new Set(textFronts).size).toBe(textFronts.length);
+  const answered = backs.map((back, i) => `${back}|${sources[i]}`);
+  expect(new Set(answered).size).toBe(answered.length);
   expect(fronts.length).toBeGreaterThan(10);
   await expect(page.locator(`[data-testid^="card-"][data-document="${aDocument}"]`)).not.toHaveCount(6);
 

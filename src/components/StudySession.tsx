@@ -21,6 +21,7 @@ import { newSchedule, previewRatings } from "@/lib/engine/scheduler";
 import { StaleAttemptError } from "@/lib/domain/errors";
 import { pageAssetId } from "@/lib/visuals/analyze";
 import type { RetrievalKind, SelfRating } from "@/lib/domain/types";
+import { displayExcerpt } from "@/lib/domain/text";
 
 /*
  * Anki-style study: front → Show Answer → back → Again / Hard / Good / Easy.
@@ -420,7 +421,7 @@ export function StudySession({
                   dir="auto"
                   className="mt-2 whitespace-pre-line border-l-4 border-clinical-300 pl-4 text-[0.95rem] leading-relaxed text-ink-600"
                 >
-                  “{concept.source.excerpt}”
+                  “{displayExcerpt(concept.source.excerpt)}”
                 </blockquote>
                 <div className="mt-3">
                   <CardImage image={pageImage} alt={`Page ${concept.source.pageNumber} of ${document?.title ?? "the source"}`} size="page" testId="source-page-image" hideWhenMissing />

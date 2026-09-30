@@ -8,6 +8,7 @@ import { Button, ButtonLink, Card, SectionTitle } from "./ui";
 import { browseCards, type BrowserFilter, type BrowserRow, type CardStudyStatus } from "@/lib/engine/decks";
 import { buryCard, formatInterval, resumeCard, suspendCard, unburyCard } from "@/lib/engine/study";
 import type { ConceptImportance, RetrievalKind } from "@/lib/domain/types";
+import { displayExcerpt } from "@/lib/domain/text";
 
 /*
  * The card browser: every studyable card (ACTIVE concepts only), with its
@@ -198,7 +199,7 @@ export function CardBrowser() {
                             Source: {row.document?.title ?? row.concept.source.documentId} · page {row.concept.source.pageNumber}
                           </summary>
                           <blockquote data-testid={`card-excerpt-${row.item.id}`} className="mt-1 border-l-4 border-clinical-300 pl-3 text-sm text-ink-600">
-                            “{row.concept.source.excerpt}”
+                            “{displayExcerpt(row.concept.source.excerpt)}”
                           </blockquote>
                           <Link href={`/concepts?document=${encodeURIComponent(row.concept.source.documentId)}`} data-testid={`card-open-source-${row.item.id}`} className="mt-1 inline-flex min-h-[44px] items-center font-semibold text-clinical-700">
                             Open in concept review

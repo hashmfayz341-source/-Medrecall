@@ -69,6 +69,41 @@ the internal layer and the Tutor remains a separate feature.
       generator behind Stage B abuse control), OCR, figure understanding
       beyond captions and labels
 
+## Trusted medical cards (implemented, awaiting review)
+
+Production QA of generated cards (Cell Injury, Autonomic Pharmacology) found
+most cards bad: grammatical blanks ("What is There?"), pronouns, truncated
+lists, question slides as cards, merged paragraphs and drugs, fabricated
+excerpts, a wet-gangrene picture on a dry-gangrene answer.
+
+- [x] Source structure from text positions (`lib/ingestion/layout.ts`):
+      wrapped lines joined only when they visibly wrap; bullets, text boxes,
+      columns, captions and table cells kept apart; tables rebuilt row by
+      row; kept in the page text (`layout: "blocks"`)
+- [x] Sentences read inside one paragraph / bullet / cell; pronouns resolved
+      only from the sentence naming the subject in the same paragraph (or the
+      parent bullet), otherwise not used; questions, captions, vignettes and
+      headings without a fact skipped with a counted reason
+- [x] Learning targets (`lib/generation/targets.ts`): one subject, one
+      relation, one short answer in the lecture's words; definitions,
+      identities, superlatives, causes, uses, drug actions, location, timing,
+      counts, comparisons, labelled items, complete lists, table cells and
+      comparison rows
+- [x] Quality filters with reasons; grounded questions and answers; verbatim
+      single-block excerpts
+- [x] Coverage-aware counts: prefix-stable (20 ⊂ 40 ⊂ 60), spread across
+      pages and relations, never filler; shortfall explained as "source" or
+      "extraction"
+- [x] Conservative images: a caption belongs to the one figure it sits under;
+      shared, positional and table captions answer nothing; distinct pictures
+      in a repeated layout slot are figures, a shared logo is not
+- [x] Benchmark: five lectures from three PDF producers
+      (`tests/fixtures/benchmark/`), two written after tuning; every card
+      graded by hand; invariants in `tests/unit/benchmark-lectures.test.ts`
+- [ ] Not in this step: scanned PDFs (OCR), reading text inside images,
+      hosted-model generation, Arabic rendering of the new relation types
+      beyond the existing patterns (disclosed as Partly English)
+
 ## Milestone 1 — Deterministic tutor ✅
 
 A complete tutor running with no AI key.

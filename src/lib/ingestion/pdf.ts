@@ -1,5 +1,6 @@
 import type { Page } from "@/lib/domain/types";
 import { createHash } from "node:crypto";
+import { layoutPage, type PositionedItem } from "./layout";
 import { createModuleRequire as createRequire } from "./moduleRequire";
 
 /**
@@ -210,10 +211,13 @@ export async function extractPdfPages(
     for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
       const page = await doc.getPage(pageNumber);
       const content = await page.getTextContent();
-      const lines = linesFromItems(content.items as TextItemLike[]);
-      const { title } = splitHeading(lines, pageNumber);
+      // Source structure from positions: paragraphs, bullet items, text
+      // boxes, captions and table cells stay apart (see ./layout).
+      const layout = layoutPage(content.items as PositionedItem[]);
+      const lines = layout.text.split("\n").filter((line) => line.trim().length > 0);
+      const title = layout.title || splitHeading(lines, pageNumber).title;
       // Keep the heading too: extraction must never delete source text.
-      pages.push({ number: pageNumber, title, text: lines.join("\n") });
+      pages.push({ number: pageNumber, title, text: layout.text, layout: "blocks" });
       page.cleanup();
     }
 
