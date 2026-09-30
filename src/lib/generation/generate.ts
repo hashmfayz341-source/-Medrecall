@@ -612,19 +612,20 @@ export function generateCards(input: GenerateCardsInput): GeneratedCards {
   const factOfId = (id: string) => id.replace(/-t\d+$/, "");
   const existingTexts = input.existing.map((e) => ({ id: e.id, text: e.summary }));
 
-  // Dedupe against what exists (by id; by statement, unless it is the same
-  // fact's other target), then among the new targets.
+  // What already exists (by id; by statement, unless it is the same fact's
+  // other target) is ranked with everything else, then skipped: so "Generate
+  // more" continues the same order, and 20 + 20 are the 40 a single run gives.
   const order = (a: Located, b: Located) =>
     (documentOrder.get(a.documentId) ?? 0) - (documentOrder.get(b.documentId) ?? 0) || a.fact.pageNumber - b.fact.pageNumber || a.fact.index - b.fact.index || a.target.ordinal - b.target.ordinal;
-  const fresh = targets.filter((located) => {
+  const isFresh = (located: Located) => {
     const id = targetId(located.documentId, located.target);
     if (existingIds.has(id)) return false;
     if (located.fact.kind === "figure") return true;
     const statement = { text: located.target.ordinal === 0 && located.fact.kind !== "table" ? located.fact.text : `${located.target.question} ${located.target.fact}` };
     const siblingOf = factId(located.documentId, located.fact);
     return !existingTexts.some((e) => factOfId(e.id) !== siblingOf && factsOverlap(e, statement));
-  });
-  const ranked = [...fresh].sort((a, b) => b.target.importance - a.target.importance || order(a, b));
+  };
+  const ranked = [...targets].sort((a, b) => b.target.importance - a.target.importance || order(a, b));
   const kept: Located[] = [];
   const answerKey = (l: Located) => `${l.target.relation}|${normalize(l.target.subject)}`;
   for (const located of ranked) {
@@ -679,7 +680,7 @@ export function generateCards(input: GenerateCardsInput): GeneratedCards {
     candidates.push({ located, ...built });
   }
 
-  const chosen = coverageOrder(candidates, order).map((i) => candidates[i]!);
+  const chosen = coverageOrder(candidates, order).map((i) => candidates[i]!).filter((c) => isFresh(c.located));
   const selected = requested === "auto" ? chosen.filter((c) => c.located.target.importance >= AUTO_MIN_SCORE) : chosen.slice(0, requested);
   selected.sort((a, b) => order(a.located, b.located));
   const concepts = selected.map((c) => c.concept);
@@ -688,9 +689,9 @@ export function generateCards(input: GenerateCardsInput): GeneratedCards {
   return {
     concepts,
     requested,
-    available: candidates.length,
+    available: chosen.length,
     shortfall,
-    shortfallReason: shortfall === 0 ? null : candidates.length + factual >= (requested as number) ? "extraction" : "source",
+    shortfallReason: shortfall === 0 ? null : chosen.length + factual >= (requested as number) ? "extraction" : "source",
     rejected,
     coverage: {
       arabic: selected.filter((c) => c.coverage === "arabic").length,

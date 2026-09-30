@@ -365,6 +365,14 @@ describe("coverage: larger counts add distinct material; never filler; the short
     expect(new Set(prompts).size).toBe(prompts.length);
   });
 
+  it("'Generate more' continues the same order: 5, then 5 more, are the 10 of a single run", () => {
+    const first = generate(lecture, 5);
+    const existing = first.concepts.map((c) => ({ id: c.id, title: c.title, summary: c.summary }));
+    const more = generateCards({ courseId: "course", lectureId: "lecture", document: { id: "doc", title: "Doc", pages: lecture }, language: "en", count: 5, existing });
+    const both = new Set([...first.concepts, ...more.concepts].map((c) => c.id));
+    expect(both).toEqual(new Set(generate(lecture, 10).concepts.map((c) => c.id)));
+  });
+
   it("more than the lecture supports: every valid card, a shortfall, reason 'source'", () => {
     const out = generate(lecture, 100);
     expect(out.concepts.length).toBe(out.available);
