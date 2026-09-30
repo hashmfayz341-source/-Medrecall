@@ -170,7 +170,7 @@ function sentenceTargets(fact: Fact): Draft[] {
     } else if ((x = m(new RegExp(`^(?:${adverb})(seen|found|located|present|observed)\\s+((?:\\w+ly\\s+)?(?:in|within|at|on|around|near)\\b.+)$`, "i")))) {
       out.push({ subject: S, relation: "location", fact: `${x[1] ?? ""}${x[3]!}`.trim(), question: `Where ${aux} ${Sq} ${x[2]!.toLowerCase()}?`, importance: 2 + core });
     } else if ((x = m(/^used\s+(.+)$/i))) {
-      const use = useTarget(S, aux, x[1]!);
+      const use = targetForUse(S, aux, x[1]!);
       if (use) out.push({ ...use, importance: 2.5 + core });
     } else if ((x = m(/^(?:also\s+)?(called|termed|known as|referred to as)\s+(.+)$/i))) {
       out.push({ subject: S, relation: "identity", fact: x[2]!, question: `What ${aux} ${Sq} ${x[1]!.toLowerCase()}?`, importance: 2.3 + core });
@@ -192,7 +192,7 @@ function sentenceTargets(fact: Fact): Draft[] {
       const answer = tail ? tail[1]! : rest;
       out.push({ subject: S, relation: "definition", fact: answer, question: `What ${aux} ${Sq}?`, importance: 2.5 + core });
       if (tail) {
-        const use = useTarget(S, aux, tail[2]!);
+        const use = targetForUse(S, aux, tail[2]!);
         if (use) out.push({ ...use, importance: 2.5 });
       }
     }
@@ -279,7 +279,7 @@ function sentenceTargets(fact: Fact): Draft[] {
 }
 
 /** "used to treat X" / "used in X" / "used to reverse A and to treat B". */
-function useTarget(subject: string, aux: string, tail: string): Omit<Draft, "importance"> | null {
+function targetForUse(subject: string, aux: string, tail: string): Omit<Draft, "importance"> | null {
   const t = trimEnd(tail);
   const Sq = inQuestion(subject);
   let x: RegExpExecArray | null;
